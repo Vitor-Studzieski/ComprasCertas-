@@ -1,4 +1,6 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { apiDelete, apiGet, apiPost, ApiError, refreshCsrfToken } from './api';
+import { createWebAuthnCredential, getWebAuthnAssertion } from './webauthn';
 
 type RegistrationForm = {
   organizationName: string;
@@ -7,11 +9,11 @@ type RegistrationForm = {
   password: string;
 };
 
-type RegistrationStatus = 'editing' | 'submitting' | 'error' | 'pending-confirmation';
-
-type ScreenState = {
-  status: RegistrationStatus;
-  preview: boolean;
+type Screen = 'register' | 'pending' | 'confirming' | 'login' | 'enrollment' | 'mfa' | 'recovery-codes' | 'authenticated';
+type LoginResponse = {
+  status: 'authenticated' | 'second_factor_required' | 'second_factor_enrollment_required';
+  challengeId?: string;
+  methods?: Array<'webauthn' | 'recovery_code'>;
 };
 
 const emptyForm: RegistrationForm = {
@@ -21,74 +23,234 @@ const emptyForm: RegistrationForm = {
   password: '',
 };
 
-function getInitialScreen(): ScreenState {
-  // URL previews let the UI states be reviewed without submitting or simulating a response.
-  const preview = new URLSearchParams(window.location.search).get('preview');
+function initialScreen(): Screen {
+  return window.location.pathname.replace(/\/$/, '') === '/confirm-email' ? 'confirming' : 'register';
+}
 
-  switch (preview) {
-    case 'sending':
-      return { status: 'submitting', preview: true };
-    case 'error':
-      return { status: 'error', preview: true };
-    case 'confirmation':
-      return { status: 'pending-confirmation', preview: true };
-    default:
-      return { status: 'editing', preview: false };
+function errorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    const fieldErrors = error.fields ? Object.values(error.fields).flat().join(' ') : '';
+    return fieldErrors || error.message;
   }
-}
-
-function PreviewNotice({ status }: { status: RegistrationStatus }) {
-  const message = status === 'submitting'
-    ? 'Prévia visual do envio. Nenhuma chamada à API está sendo feita.'
-    : status === 'pending-confirmation'
-      ? 'Prévia visual da confirmação pendente. Nenhum e-mail foi enviado.'
-      : 'Prévia visual do erro. Nenhum dado foi enviado.';
-
-  return <p className="preview-note" role="note">{message}</p>;
-}
-
-function PendingConfirmation({ preview }: { preview: boolean }) {
-  return (
-    <div className="confirmation-state">
-      <div className="confirmation-symbol" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none">
-          <path d="M4 6.75h16v10.5H4z" />
-          <path d="m4.5 7.25 7.5 6 7.5-6" />
-        </svg>
-      </div>
-      <p className="eyebrow">Cadastro CompraCerta</p>
-      <h2 id="confirmation-title">Confirme seu e-mail</h2>
-      <p className="confirmation-copy">
-        Depois que o cadastro for conectado e enviado, a pessoa administradora receberá um link
-        para confirmar o endereço de e-mail.
-      </p>
-      <div className="trial-note" role="note">
-        <span className="trial-icon" aria-hidden="true">30</span>
-        <span>
-          <strong>30 dias grátis</strong><br />
-          O teste começa após a confirmação do e-mail. Não é necessário informar dados de pagamento.
-        </span>
-      </div>
-      {preview && <PreviewNotice status="pending-confirmation" />}
-      <a className="return-link" href="/">Voltar ao cadastro</a>
-    </div>
-  );
+  return error instanceof Error ? error.message : 'Não foi possível concluir a solicitação.';
 }
 
 export default function App() {
-  const [form, setForm] = useState(emptyForm);
-  const [screen, setScreen] = useState<ScreenState>(getInitialScreen);
-  const isSubmitting = screen.status === 'submitting';
+  const [screen, setScreen] = useState<Screen>(initialScreen);
+  const [registration, setRegistration] = useState(emptyForm);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [challengeId, setChallengeId] = useState('');
+  const [methods, setMethods] = useState<LoginResponse['methods']>([]);
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
+  const [showRecoveryInput, setShowRecoveryInput] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const confirmationStarted = useRef(false);
+  const hasInteracted = useRef(false);
+  const [loginSessionConflict, setLoginSessionConflict] = useState(false);
 
-  function updateField(field: keyof RegistrationForm, value: string) {
-    setForm((current) => ({ ...current, [field]: value }));
-    setScreen({ status: 'editing', preview: false });
-  }
+  useEffect(() => {
+    if (window.location.pathname.replace(/\/$/, '') === '/confirm-email') return;
+    let cancelled = false;
+    apiGet<{ status: string }>('/sessions/current/')
+      .then(() => {
+        if (!cancelled && !hasInteracted.current) setScreen('authenticated');
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    if (screen !== 'confirming' || confirmationStarted.current) return;
+    confirmationStarted.current = true;
+    const token = new URLSearchParams(window.location.hash.slice(1)).get('token');
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+
+    if (!token) {
+      setError('O link não contém um código de confirmação. Solicite um novo e-mail.');
+      setScreen('pending');
+      return;
+    }
+
+    let cancelled = false;
+    apiPost<{ status: string }>('/email-confirmations/', { token })
+      .then(() => {
+        if (cancelled) return;
+        setNotice('E-mail confirmado. Entre com seu e-mail e senha para configurar o segundo fator.');
+        setScreen('login');
+      })
+      .catch((requestError: unknown) => {
+        if (cancelled) return;
+        setError(errorMessage(requestError));
+        setScreen('pending');
+      });
+
+    return () => { cancelled = true; };
+  }, [screen]);
+
+  async function submitRegistration(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setScreen({ status: 'error', preview: false });
+    hasInteracted.current = true;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await apiPost('/registrations/', {
+        organizationName: registration.organizationName,
+        administratorName: registration.administratorName,
+        email: registration.email,
+        password: registration.password,
+      });
+      setEmail(registration.email);
+      setRegistration((current) => ({ ...current, password: '' }));
+      setScreen('pending');
+      setNotice('Se o endereço puder iniciar o cadastro, enviaremos um link de confirmação.');
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
   }
+
+  async function resendConfirmation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    hasInteracted.current = true;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await apiPost('/email-confirmations/resend/', { email });
+      setNotice('Se houver um cadastro pendente para esse endereço, enviaremos outro link.');
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    hasInteracted.current = true;
+    setBusy(true);
+    setError('');
+    setNotice('');
+    setLoginSessionConflict(false);
+    try {
+      const result = await apiPost<LoginResponse>('/sessions/', { email, password });
+      setPassword('');
+      if (result.status === 'authenticated') {
+        await refreshCsrfToken();
+        setScreen('authenticated');
+      } else {
+        setChallengeId(result.challengeId ?? '');
+        setMethods(result.methods ?? []);
+        setShowRecoveryInput(false);
+        setScreen(result.status === 'second_factor_enrollment_required' ? 'enrollment' : 'mfa');
+      }
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+      if (requestError instanceof ApiError && requestError.status === 409) {
+        setLoginSessionConflict(true);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function enrollPasskey() {
+    setBusy(true);
+    setError('');
+    try {
+      const options = await apiPost<Record<string, unknown>>(
+        '/sessions/mfa/enrollment/options/',
+        { challengeId },
+      );
+      const credential = await createWebAuthnCredential(options);
+      const result = await apiPost<{ recoveryCodes: string[] }>(
+        '/sessions/mfa/enrollment/verify/',
+        { challengeId, credential },
+      );
+      await refreshCsrfToken();
+      setRecoveryCodes(result.recoveryCodes);
+      setScreen('recovery-codes');
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function authenticateWithPasskey() {
+    setBusy(true);
+    setError('');
+    try {
+      const options = await apiPost<Record<string, unknown>>(
+        '/sessions/mfa/authentication/options/',
+        { challengeId },
+      );
+      const credential = await getWebAuthnAssertion(options);
+      await apiPost('/sessions/mfa/authentication/verify/', { challengeId, credential });
+      await refreshCsrfToken();
+      setScreen('authenticated');
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function authenticateWithRecoveryCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      await apiPost('/sessions/mfa/recovery-code/', { challengeId, recoveryCode });
+      await refreshCsrfToken();
+      setRecoveryCode('');
+      setScreen('authenticated');
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function signOut() {
+    setBusy(true);
+    setError('');
+    try {
+      await apiDelete('/sessions/current/');
+      await refreshCsrfToken();
+      setLoginSessionConflict(false);
+      setScreen('login');
+      setNotice('Você saiu da sua conta.');
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function goTo(next: Screen) {
+    hasInteracted.current = true;
+    setError('');
+    setNotice('');
+    setScreen(next);
+  }
+
+  const panelTitle = {
+    register: 'Crie sua conta',
+    pending: 'Confirme seu e-mail',
+    confirming: 'Confirmando seu e-mail',
+    login: 'Entre na sua conta',
+    enrollment: 'Proteja sua conta',
+    mfa: 'Confirme sua identidade',
+    'recovery-codes': 'Guarde seus códigos',
+    authenticated: 'Acesso liberado',
+  }[screen];
 
   return (
     <main className="page-shell">
@@ -114,103 +276,107 @@ export default function App() {
         <p className="intro-footnote">Feito para mercados de bairro e lojas de conveniência.</p>
       </section>
 
-      <section className="form-panel" aria-labelledby={screen.status === 'pending-confirmation' ? 'confirmation-title' : 'form-title'}>
-        {screen.status === 'pending-confirmation' ? (
-          <PendingConfirmation preview={screen.preview} />
-        ) : (
+      <section className="form-panel" aria-labelledby="panel-title">
+        <div className="form-heading">
+          <p className="eyebrow">CompraCerta</p>
+          <h2 id="panel-title">{panelTitle}</h2>
+          {screen === 'register' && <p>Configure sua rede e convide sua equipe depois.</p>}
+        </div>
+
+        {notice && <p className="form-notice" role="status">{notice}</p>}
+        {error && <p className="form-error" role="alert">{error}</p>}
+
+        {screen === 'register' && (
           <>
-            <div className="form-heading">
-              <p className="eyebrow">Comece por aqui</p>
-              <h2 id="form-title">Crie sua conta</h2>
-              <p>Configure sua rede e convide sua equipe depois.</p>
-            </div>
-
-            {screen.preview && <PreviewNotice status={screen.status} />}
-
             <div className="trial-note" role="note">
               <span className="trial-icon" aria-hidden="true">30</span>
-              <span>
-                <strong>30 dias grátis</strong><br />
-                O teste começa após confirmar seu e-mail. Não é necessário informar dados de pagamento.
-              </span>
+              <span><strong>30 dias grátis</strong><br />O teste começa após confirmar seu e-mail. Não é necessário informar pagamento.</span>
             </div>
-
-            <form className="registration-form" onSubmit={handleSubmit} aria-busy={isSubmitting}>
+            <form className="registration-form" onSubmit={submitRegistration} aria-busy={busy}>
               <label htmlFor="organizationName">Nome da rede</label>
-              <input
-                autoComplete="organization"
-                disabled={isSubmitting}
-                id="organizationName"
-                name="organizationName"
-                onChange={(event) => updateField('organizationName', event.target.value)}
-                placeholder="Ex.: Mercados Horizonte"
-                required
-                value={form.organizationName}
-              />
-
+              <input autoComplete="organization" disabled={busy} id="organizationName" minLength={2} maxLength={160} onChange={(event) => setRegistration({ ...registration, organizationName: event.target.value })} required value={registration.organizationName} />
               <label htmlFor="administratorName">Nome do administrador</label>
-              <input
-                autoComplete="name"
-                disabled={isSubmitting}
-                id="administratorName"
-                name="administratorName"
-                onChange={(event) => updateField('administratorName', event.target.value)}
-                placeholder="Nome da pessoa administradora"
-                required
-                value={form.administratorName}
-              />
-
-              <label htmlFor="email">E-mail</label>
-              <input
-                autoComplete="email"
-                disabled={isSubmitting}
-                id="email"
-                name="email"
-                onChange={(event) => updateField('email', event.target.value)}
-                placeholder="voce@sualoja.com.br"
-                required
-                type="email"
-                value={form.email}
-              />
-
-              <label htmlFor="password">Senha</label>
-              <input
-                autoComplete="new-password"
-                disabled={isSubmitting}
-                id="password"
-                name="password"
-                onChange={(event) => updateField('password', event.target.value)}
-                placeholder="Crie uma senha"
-                required
-                type="password"
-                value={form.password}
-              />
+              <input autoComplete="name" disabled={busy} id="administratorName" minLength={2} maxLength={160} onChange={(event) => setRegistration({ ...registration, administratorName: event.target.value })} required value={registration.administratorName} />
+              <label htmlFor="registerEmail">E-mail</label>
+              <input autoComplete="email" disabled={busy} id="registerEmail" maxLength={254} onChange={(event) => setRegistration({ ...registration, email: event.target.value })} required type="email" value={registration.email} />
+              <label htmlFor="registerPassword">Senha</label>
+              <input autoComplete="new-password" disabled={busy} id="registerPassword" maxLength={256} onChange={(event) => setRegistration({ ...registration, password: event.target.value })} required type="password" value={registration.password} />
               <p className="field-hint">Você confirma seu e-mail antes de acessar a plataforma.</p>
-
-              <button className="submit-button" disabled={isSubmitting} type="submit">
-                {isSubmitting && <span className="spinner" aria-hidden="true" />}
-                {isSubmitting ? 'Enviando...' : 'Criar conta de teste'}
-              </button>
-              {isSubmitting && (
-                <p className="sending-status" role="status">
-                  Prévia visual: o envio real aguarda a integração com a API.
-                </p>
-              )}
-              {screen.status === 'error' && (
-                <p className="form-error" role="alert">
-                  O cadastro ainda não está conectado à API. Nenhum dado foi enviado.
-                </p>
-              )}
+              <button className="submit-button" disabled={busy} type="submit">{busy ? 'Enviando...' : 'Criar conta de teste'}</button>
             </form>
-
-            <p className="login-prompt">
-              Já tem uma conta? <span>A entrada estará disponível em breve.</span>
-            </p>
-            <p className="legal-copy">
-              Os termos de uso e a política de privacidade serão apresentados antes da conclusão do cadastro.
-            </p>
+            <p className="login-prompt">Já tem uma conta? <button className="text-button" onClick={() => goTo('login')} type="button">Entrar</button></p>
           </>
         )}
+
+        {screen === 'pending' && (
+          <div className="confirmation-state">
+            <div className="confirmation-symbol" aria-hidden="true">✉</div>
+            <p className="confirmation-copy">Enviamos instruções para confirmar o endereço. O teste de 30 dias começa após a confirmação.</p>
+            <form className="registration-form" onSubmit={resendConfirmation}>
+              <label htmlFor="resendEmail">E-mail</label>
+              <input autoComplete="email" disabled={busy} id="resendEmail" onChange={(event) => setEmail(event.target.value)} required type="email" value={email} />
+              <button className="submit-button" disabled={busy} type="submit">{busy ? 'Enviando...' : 'Reenviar confirmação'}</button>
+            </form>
+            <button className="text-button standalone-link" onClick={() => goTo('login')} type="button">Voltar ao login</button>
+          </div>
+        )}
+
+        {screen === 'confirming' && <p className="sending-status" role="status">Validando o link de confirmação…</p>}
+
+        {screen === 'login' && (
+          <form className="registration-form" onSubmit={submitLogin} aria-busy={busy}>
+            <label htmlFor="loginEmail">E-mail</label>
+            <input autoComplete="username" disabled={busy} id="loginEmail" onChange={(event) => setEmail(event.target.value)} required type="email" value={email} />
+            <label htmlFor="loginPassword">Senha</label>
+            <input autoComplete="current-password" disabled={busy} id="loginPassword" onChange={(event) => setPassword(event.target.value)} required type="password" value={password} />
+            <button className="submit-button" disabled={busy} type="submit">{busy ? 'Entrando...' : 'Entrar'}</button>
+            {loginSessionConflict && <button className="secondary-button" disabled={busy} onClick={signOut} type="button">Encerrar sessão atual</button>}
+            <p className="login-prompt">Ainda não tem conta? <button className="text-button" onClick={() => goTo('register')} type="button">Criar conta</button></p>
+          </form>
+        )}
+
+        {screen === 'enrollment' && (
+          <div className="confirmation-state">
+            <p className="confirmation-copy">Administradores e pessoas que aprovam operações precisam configurar uma passkey antes de acessar a plataforma.</p>
+            <p className="field-hint">Use Windows Hello, uma passkey do dispositivo ou uma chave de segurança compatível.</p>
+            <button className="submit-button" disabled={busy} onClick={enrollPasskey} type="button">{busy ? 'Configurando...' : 'Configurar passkey'}</button>
+          </div>
+        )}
+
+        {screen === 'mfa' && (
+          <div className="confirmation-state">
+            <p className="confirmation-copy">Confirme sua identidade para concluir a entrada.</p>
+            {methods?.includes('webauthn') && <button className="submit-button" disabled={busy} onClick={authenticateWithPasskey} type="button">{busy ? 'Aguardando...' : 'Usar passkey'}</button>}
+            {methods?.includes('recovery_code') && !showRecoveryInput && <button className="secondary-button" disabled={busy} onClick={() => { setError(''); setShowRecoveryInput(true); }} type="button">Usar código de recuperação</button>}
+            {methods?.includes('recovery_code') && showRecoveryInput && (
+              <form className="registration-form recovery-form" onSubmit={authenticateWithRecoveryCode}>
+                <label htmlFor="recoveryCode">Código de recuperação</label>
+                <input autoComplete="one-time-code" disabled={busy} id="recoveryCode" onChange={(event) => setRecoveryCode(event.target.value)} required value={recoveryCode} />
+                <button className="submit-button" disabled={busy} type="submit">{busy ? 'Verificando...' : 'Verificar código'}</button>
+              </form>
+            )}
+            <button className="text-button standalone-link" disabled={busy} onClick={() => goTo('login')} type="button">Cancelar e voltar ao login</button>
+          </div>
+        )}
+
+        {screen === 'recovery-codes' && (
+          <div className="confirmation-state">
+            <p className="confirmation-copy">Salve estes códigos agora. Cada código só pode ser usado uma vez e não será exibido novamente.</p>
+            <ul className="recovery-codes" aria-label="Códigos de recuperação">
+              {recoveryCodes.map((code) => <li key={code}><code>{code}</code></li>)}
+            </ul>
+            <button className="submit-button" onClick={() => { setRecoveryCodes([]); setScreen('authenticated'); }} type="button">Guardei os códigos, continuar</button>
+          </div>
+        )}
+
+        {screen === 'authenticated' && (
+          <div className="confirmation-state">
+            <p className="confirmation-copy">Sua sessão está ativa. O próximo passo é configurar a primeira loja e os produtos da rede.</p>
+            <button className="secondary-button" disabled={busy} onClick={signOut} type="button">{busy ? 'Saindo...' : 'Sair da conta'}</button>
+          </div>
+        )}
+
+        <p className="legal-copy">Os termos de uso e a política de privacidade serão apresentados antes da conclusão do cadastro.</p>
       </section>
     </main>
   );
