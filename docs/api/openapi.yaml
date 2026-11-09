@@ -465,28 +465,33 @@ paths:
   /sessions/current/:
     get:
       operationId: getCurrentSession
-      summary: Read the current authenticated session state
+      summary: Read the current session and its active organizations
       description: >-
-        Returns only the authentication state. A protected operation still
-        requires MFA whenever the account has an active privileged membership.
+        Returns the authenticated state, the active organization selected for
+        this session (if any), and the user's active memberships. If the user
+        has one active membership, the server may select it automatically. If
+        there are multiple active memberships and none is selected, status is
+        organization_selection_required and no tenant-scoped API operation is
+        allowed until selection. With no active memberships, organizations is
+        empty and no tenant operation is available. Organization context is
+        not authority: every tenant operation still checks membership, role,
+        and store scope on the server.
       tags: [Identity]
       security:
         - SessionCookie: []
       responses:
         '200':
-          description: Current session is authenticated and has the required MFA assurance.
+          description: Authenticated session state and active membership context.
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: false
-                required: [status]
-                properties:
-                  status:
-                    type: string
-                    const: authenticated
+                $ref: '#/components/schemas/CurrentSession'
         '403':
-          description: No authenticated session or additional MFA is required.
+          description: No authenticated session or required MFA assurance is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
     delete:
       operationId: deleteCurrentSession
       summary: Sign out of the current session
@@ -499,6 +504,54 @@ paths:
           description: Session invalidated.
         '403':
           description: No active session.
+  /sessions/current/organization/:
+    put:
+      operationId: setCurrentOrganization
+      summary: Select the active organization for this session
+      description: >-
+        Accepts an organization ID only as a selection request. The server
+        must verify that the authenticated user has an active membership in
+        that organization and must save the selection in the server-side
+        session only after that check. The ID does not grant authority; each
+        tenant operation continues to enforce membership, role, MFA, and store
+        scope. If there are multiple active memberships, tenant-scoped API
+        operations remain unavailable until a valid selection is saved. An
+        organization that does not exist, is not an active membership, or is
+        otherwise not selectable receives the same generic response.
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationSelectionRequest'
+      responses:
+        '200':
+          description: Active organization selected for this session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentSession'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          description: No authenticated session or required MFA assurance is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: >-
+            Organization is unavailable or is not an active membership for
+            this user. The response is identical for an unknown organization,
+            a missing membership, or an invalid selection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationUnavailable'
 
 components:
   securitySchemes:
@@ -594,6 +647,61 @@ components:
         status:
           type: string
           const: authenticated
+    CurrentSession:
+      description: >-
+        Provisional session-context representation. Organizations contains
+        only active memberships; activeOrganizationId is null when no context
+        has been selected or the user has no active membership.
+      type: object
+      additionalProperties: false
+      required: [status, activeOrganizationId, organizations]
+      properties:
+        status:
+          type: string
+          enum: [authenticated, organization_selection_required]
+        activeOrganizationId:
+          type: [string, 'null']
+          format: uuid
+          description: Selected server-side context; not an authorization credential.
+        organizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationMembership'
+    OrganizationMembership:
+      type: object
+      additionalProperties: false
+      required: [id, name, role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        role:
+          type: string
+          description: Role from the active membership; exact serialized role values are provisional.
+    OrganizationSelectionRequest:
+      description: Organization ID is a context selection request, not authority.
+      type: object
+      additionalProperties: false
+      required: [organizationId]
+      properties:
+        organizationId:
+          type: string
+          format: uuid
+          description: Must identify an active membership owned by the authenticated user.
+    OrganizationUnavailable:
+      description: Generic response for any organization that cannot be selected by this user.
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: organization_unavailable
+        message:
+          type: string
+          description: Same generic wording for unknown organizations and missing active memberships.
     MfaRequired:
       description: >-
         Pre-authentication state only. It has no session cookie and cannot
