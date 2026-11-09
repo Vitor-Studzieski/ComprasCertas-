@@ -14,6 +14,11 @@ info:
     and people who approve orders or stock adjustments must complete MFA
     before an authenticated session is issued. The technical draft uses
     WebAuthn and server-side Django sessions; it does not use bearer/JWT tokens.
+    Tenant-scoped inventory endpoints use the validated active organization
+    from that session. They accept no organizationId authority from the client;
+    every listed endpoint in this slice is administrator-only, and browser
+    writes require CSRF. A tenant operation is unavailable until an active
+    organization is selected when the user has multiple memberships.
 servers:
   - url: /api/v1
     description: Versioned API base path
@@ -553,6 +558,406 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationUnavailable'
 
+  /organizations/current/operational-calendar/:
+    get:
+      operationId: listOrganizationOperationalCalendarVersions
+      summary: List the network's operational-calendar defaults
+      description: >-
+        Administrator-only. The organization is resolved from the validated
+        active session; this path does not accept an organization ID. Returns
+        all date-effective default versions with their audit actor and server
+        timestamp. If none are configured, versions is empty.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: All operational-calendar default versions for the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationOperationalCalendar'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+  /organizations/current/operational-calendar/versions/:
+    post:
+      operationId: createOrganizationOperationalCalendarVersion
+      summary: Append a network operational-calendar default version
+      description: >-
+        Administrator-only. Resolves the organization from the validated
+        active session. Adds a date-effective version; existing versions and
+        their audit records are not overwritten or deleted. effectiveFrom is
+        inclusive and is an operational date. The organization must provide
+        both a time zone and a local operational-day start; no start time is
+        hard-coded.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationOperationalCalendarVersionRequest'
+      responses:
+        '201':
+          description: New immutable calendar version recorded with server-side audit metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationOperationalCalendarVersion'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+        '409':
+          $ref: '#/components/responses/OperationalCalendarVersionConflict'
+  /stores/:
+    get:
+      operationId: listStores
+      summary: List stores in the active organization
+      description: >-
+        Administrator-only. The organization is derived from the validated
+        active session. Each store reports its current explicit overrides and
+        the effective calendar resolved field by field from those overrides
+        and the network defaults. effectiveCalendar is null while a required
+        value cannot be resolved.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Stores belonging to the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+    post:
+      operationId: createStore
+      summary: Create a store
+      description: >-
+        Administrator-only. The organization is derived from the validated
+        active session. No organizationId is accepted. calendarOverrides is
+        optional; omitted fields inherit the network's corresponding default.
+        If supplied, effectiveFrom is inclusive and creates an immutable
+        store-calendar version with audit metadata.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreCreateRequest'
+      responses:
+        '201':
+          description: Store created in the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Store'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+        '409':
+          $ref: '#/components/responses/StoreNameConflict'
+  /stores/{storeId}/operational-calendar/versions/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: listStoreOperationalCalendarVersions
+      summary: List date-effective store calendar overrides
+      description: >-
+        Administrator-only. The server verifies the store belongs to the
+        validated active organization. Returns historical and future override
+        versions with audit metadata; null or omitted fields inherit the
+        network default for that field on the effective operational date.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Store calendar override history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreOperationalCalendar'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ResourceUnavailable'
+    post:
+      operationId: createStoreOperationalCalendarVersion
+      summary: Append a store calendar override version
+      description: >-
+        Administrator-only. The server verifies the store belongs to the
+        validated active organization. Creates an immutable, audited version
+        effective inclusively from the supplied operational date. Each field
+        is independent: null or an omitted override inherits the network
+        default for that field; send any store-specific value that should
+        continue from this version onward.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreOperationalCalendarVersionRequest'
+      responses:
+        '201':
+          description: New store override version recorded with audit metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreOperationalCalendarVersion'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ResourceUnavailable'
+        '409':
+          $ref: '#/components/responses/OperationalCalendarVersionConflict'
+  /products/:
+    get:
+      operationId: listProducts
+      summary: List products in the active organization
+      description: >-
+        Administrator-only. The organization is derived from the validated
+        active session. SKU is unique within this organization; no
+        organizationId is supplied by the client.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Products belonging to the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+    post:
+      operationId: createProduct
+      summary: Create a product
+      description: >-
+        Administrator-only. The organization is derived from the validated
+        active session. SKU must be unique within that organization. Base-unit
+        quantities are exact decimals: unit is countable in whole numbers, kg
+        and l accept up to three decimal places.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductCreateRequest'
+      responses:
+        '201':
+          description: Product created in the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+        '409':
+          $ref: '#/components/responses/ProductSkuConflict'
+  /stores/{storeId}/product-assortments/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: listStoreProductAssortments
+      summary: List current and historical store-product links
+      description: >-
+        Administrator-only. Store ownership is checked against the validated
+        active organization. Returns active and historical links so ending a
+        range never removes its audit history. Validity uses the half-open
+        interval [effectiveFrom, effectiveTo): the start is inclusive and the
+        optional end is exclusive.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Store-product assortment links and effective dates.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreProductAssortmentList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ResourceUnavailable'
+    post:
+      operationId: createStoreProductAssortment
+      summary: Add a product to a store assortment
+      description: >-
+        Administrator-only. The store and product must both belong to the
+        validated active organization. Creates an audited date-effective link
+        using [effectiveFrom, effectiveTo), with an optional exclusive end.
+        The active organization is derived from the session, not a client ID.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreProductAssortmentCreateRequest'
+      responses:
+        '201':
+          description: Assortment link created with audit metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreProductAssortment'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ResourceUnavailable'
+        '409':
+          $ref: '#/components/responses/AssortmentConflict'
+  /stores/{storeId}/product-assortments/{assortmentId}/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/AssortmentId'
+    patch:
+      operationId: closeStoreProductAssortment
+      summary: End a store-product assortment link
+      description: >-
+        Administrator-only. Sets the exclusive effectiveTo date for an
+        open-ended link, retaining the row and its audit history rather than
+        deleting it. effectiveTo must be later than effectiveFrom. The server
+        verifies the store and link belong to the validated active
+        organization and records the acting administrator and server time.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreProductAssortmentCloseRequest'
+      responses:
+        '200':
+          description: Link ended; its historical record is retained.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreProductAssortment'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ResourceUnavailable'
+        '409':
+          $ref: '#/components/responses/AssortmentConflict'
+  /stores/{storeId}/opening-stock-counts/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    post:
+      operationId: createOpeningStockCount
+      summary: Record one atomic opening stock count batch
+      description: >-
+        Administrator-only. Requires an effective operational calendar for
+        the store and closedOperationalDate. The server derives
+        cutoffDate = closedOperationalDate + 1 operational day. Every line
+        must refer to a product in this store's active assortment on
+        closedOperationalDate; a complete batch contains one line for every
+        product active in the assortment, including explicit zero counts.
+        All lines are validated and written as opening movements atomically;
+        on any error no line is committed. Quantities are exact decimal
+        strings: unit products require integers, kg/l products allow at most
+        three fractional places, and values are never rounded.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpeningStockCountRequest'
+      responses:
+        '201':
+          description: Atomic opening count recorded as ledger movements.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpeningStockCount'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ResourceUnavailable'
+        '409':
+          $ref: '#/components/responses/OpeningStockConflict'
+  /stores/{storeId}/stock-balances/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: listCurrentStockBalances
+      summary: Read current stock balances from movements
+      description: >-
+        Administrator-only. Requires an effective operational calendar for
+        the store's current operational date. Balances are calculated by
+        aggregating the store's stock movements; this contract does not
+        introduce a separate materialized projection. Quantities are exact
+        decimals and follow each product's base-unit precision. Store
+        ownership is checked against the validated active organization.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Current ledger-aggregated balances for the store.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockBalanceList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ResourceUnavailable'
+        '409':
+          $ref: '#/components/responses/OperationalCalendarRequired'
 components:
   securitySchemes:
     SessionCookie:
@@ -565,6 +970,23 @@ components:
       in: header
       name: X-CSRFToken
       description: CSRF token obtained from GET /csrf/; required on unsafe browser requests.
+  parameters:
+    StoreId:
+      name: storeId
+      in: path
+      required: true
+      description: Store UUID; the server verifies it belongs to the active organization.
+      schema:
+        type: string
+        format: uuid
+    AssortmentId:
+      name: assortmentId
+      in: path
+      required: true
+      description: Store-product link UUID; the server verifies its store and organization.
+      schema:
+        type: string
+        format: uuid
   responses:
     ValidationError:
       description: Request validation failed.
@@ -583,6 +1005,73 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Problem'
+    AdministratorRequired:
+      description: The active membership does not have the administrator role required by this initial slice.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ActiveOrganizationRequired:
+      description: No active organization context is selected for this tenant operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ActiveOrganizationRequired'
+    ResourceUnavailable:
+      description: Generic response for a missing or cross-organization resource identifier.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ResourceUnavailable'
+    OperationalCalendarRequired:
+      description: No effective operational calendar can be resolved for this store and date.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OperationalCalendarRequired'
+    OperationalCalendarVersionConflict:
+      description: >-
+        A calendar version already exists for the requested effectiveFrom date,
+        or the requested date is not later than the newest recorded version.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OperationalCalendarVersionConflict'
+    ProductSkuConflict:
+      description: SKU already exists in the active organization.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProductSkuConflict'
+    AssortmentConflict:
+      description: A conflicting store-product assortment link already exists.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AssortmentConflict'
+    StoreNameConflict:
+      description: A store with this name already exists in the active organization.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/StoreNameConflict'
+    OpeningStockAlreadyRecorded:
+      description: An opening stock batch has already been recorded for this store.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OpeningStockAlreadyRecorded'
+    OpeningStockConflict:
+      description: >-
+        The store has no effective operational calendar for the date, or an
+        opening count has already been recorded. The response code identifies
+        which conflict occurred.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/OperationalCalendarRequired'
+              - $ref: '#/components/schemas/OpeningStockAlreadyRecorded'
   schemas:
     RegistrationRequest:
       type: object
@@ -795,3 +1284,475 @@ components:
           maxItems: 10
           items:
             type: string
+    ActiveOrganizationRequired:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: active_organization_required
+        message:
+          type: string
+    ResourceUnavailable:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: resource_unavailable
+        message:
+          type: string
+          description: Generic wording for unknown and cross-organization resource IDs.
+    OperationalCalendarRequired:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: operational_calendar_required
+        message:
+          type: string
+    OperationalCalendarVersionConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: operational_calendar_version_conflict
+        message:
+          type: string
+    ProductSkuConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: product_sku_conflict
+        message:
+          type: string
+    AssortmentConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: assortment_conflict
+        message:
+          type: string
+    StoreNameConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: store_name_conflict
+        message:
+          type: string
+    OpeningStockAlreadyRecorded:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: opening_stock_already_recorded
+        message:
+          type: string
+    OrganizationOperationalCalendarVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [timeZone, operationalDayStart, effectiveFrom]
+      properties:
+        timeZone:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: IANA time-zone identifier used by the network default.
+        operationalDayStart:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          description: Local wall-clock time in HH:mm; no default is assumed.
+        effectiveFrom:
+          type: string
+          format: date
+          description: Inclusive operational date for this immutable version.
+    OrganizationOperationalCalendarVersion:
+      type: object
+      additionalProperties: false
+      required: [id, timeZone, operationalDayStart, effectiveFrom, createdBy, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        timeZone:
+          type: string
+        operationalDayStart:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+        effectiveFrom:
+          type: string
+          format: date
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+    OrganizationOperationalCalendar:
+      type: object
+      additionalProperties: false
+      required: [versions]
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationOperationalCalendarVersion'
+    StoreOperationalCalendarVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [effectiveFrom]
+      properties:
+        timeZone:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 64
+          description: Null or omitted means inherit the network default for this date.
+        operationalDayStart:
+          type: [string, 'null']
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          description: Null or omitted means inherit the network default for this date.
+        effectiveFrom:
+          type: string
+          format: date
+          description: Inclusive operational date for this immutable override version.
+    StoreOperationalCalendarVersion:
+      type: object
+      additionalProperties: false
+      required: [id, timeZone, operationalDayStart, effectiveFrom, createdBy, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        timeZone:
+          type: [string, 'null']
+          description: Null inherits the network default for this date.
+        operationalDayStart:
+          type: [string, 'null']
+          description: Null inherits the network default for this date.
+        effectiveFrom:
+          type: string
+          format: date
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+    StoreOperationalCalendar:
+      type: object
+      additionalProperties: false
+      required: [storeId, versions]
+      properties:
+        storeId:
+          type: string
+          format: uuid
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/StoreOperationalCalendarVersion'
+    EffectiveOperationalCalendar:
+      type: object
+      additionalProperties: false
+      required: [timeZone, operationalDayStart]
+      properties:
+        timeZone:
+          type: string
+        operationalDayStart:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+    StoreCalendarOverrides:
+      type: array
+      items:
+        $ref: '#/components/schemas/StoreOperationalCalendarVersion'
+    StoreCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        calendarOverrides:
+          type: object
+          additionalProperties: false
+          required: [effectiveFrom]
+          properties:
+            timeZone:
+              type: [string, 'null']
+              minLength: 1
+              maxLength: 64
+            operationalDayStart:
+              type: [string, 'null']
+              pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+            effectiveFrom:
+              type: string
+              format: date
+    Store:
+      type: object
+      additionalProperties: false
+      required: [id, name, isActive, calendarOverrides, effectiveCalendar, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        isActive:
+          type: boolean
+        calendarOverrides:
+          $ref: '#/components/schemas/StoreCalendarOverrides'
+        effectiveCalendar:
+          oneOf:
+            - $ref: '#/components/schemas/EffectiveOperationalCalendar'
+            - type: 'null'
+        createdAt:
+          type: string
+          format: date-time
+    StoreList:
+      type: object
+      additionalProperties: false
+      required: [stores]
+      properties:
+        stores:
+          type: array
+          items:
+            $ref: '#/components/schemas/Store'
+    ProductCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [sku, name, baseUnit]
+      properties:
+        sku:
+          type: string
+          minLength: 1
+          maxLength: 64
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        baseUnit:
+          type: string
+          enum: [unit, kg, l]
+    Product:
+      type: object
+      additionalProperties: false
+      required: [id, sku, name, baseUnit, isActive, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        name:
+          type: string
+        baseUnit:
+          type: string
+          enum: [unit, kg, l]
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    ProductList:
+      type: object
+      additionalProperties: false
+      required: [products]
+      properties:
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+    StoreProductAssortmentCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [productId, effectiveFrom]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        effectiveFrom:
+          type: string
+          format: date
+        effectiveTo:
+          type: [string, 'null']
+          format: date
+          description: Optional exclusive end date; null means no scheduled end.
+    StoreProductAssortmentCloseRequest:
+      type: object
+      additionalProperties: false
+      required: [effectiveTo]
+      properties:
+        effectiveTo:
+          type: string
+          format: date
+          description: Exclusive end date, later than effectiveFrom.
+    StoreProductAssortment:
+      type: object
+      additionalProperties: false
+      required: [id, productId, sku, productName, baseUnit, effectiveFrom, effectiveTo, createdBy, createdAt, effectiveToSetBy, effectiveToSetAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        productName:
+          type: string
+        baseUnit:
+          type: string
+          enum: [unit, kg, l]
+        effectiveFrom:
+          type: string
+          format: date
+        effectiveTo:
+          type: [string, 'null']
+          format: date
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        effectiveToSetBy:
+          type: [string, 'null']
+          format: uuid
+          description: Administrator who set the exclusive end date, if any.
+        effectiveToSetAt:
+          type: [string, 'null']
+          format: date-time
+          description: Server time when the exclusive end date was set, if any.
+    StoreProductAssortmentList:
+      type: object
+      additionalProperties: false
+      required: [storeId, assortments]
+      properties:
+        storeId:
+          type: string
+          format: uuid
+        assortments:
+          type: array
+          items:
+            $ref: '#/components/schemas/StoreProductAssortment'
+    OpeningStockCountLineRequest:
+      type: object
+      additionalProperties: false
+      required: [productId, quantity]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+          description: Exact decimal string; whole for unit and at most three fractional digits for kg/l.
+    OpeningStockCountRequest:
+      type: object
+      additionalProperties: false
+      required: [closedOperationalDate, lines]
+      properties:
+        closedOperationalDate:
+          type: string
+          format: date
+          description: Store-local operational date whose physical balance was counted and closed.
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/OpeningStockCountLineRequest'
+    OpeningStockCountLine:
+      type: object
+      additionalProperties: false
+      required: [id, productId, quantity]
+      properties:
+        id:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+    OpeningStockCount:
+      type: object
+      additionalProperties: false
+      required: [id, storeId, closedOperationalDate, cutoffDate, lines, createdBy, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        storeId:
+          type: string
+          format: uuid
+        closedOperationalDate:
+          type: string
+          format: date
+        cutoffDate:
+          type: string
+          format: date
+          description: First complete operational date after the closed count date.
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpeningStockCountLine'
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+    StockBalance:
+      type: object
+      additionalProperties: false
+      required: [productId, sku, productName, baseUnit, quantity]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        productName:
+          type: string
+        baseUnit:
+          type: string
+          enum: [unit, kg, l]
+        quantity:
+          type: string
+          pattern: '^-?(0|[1-9][0-9]*)(\.[0-9]+)?$'
+          description: Exact decimal string aggregated from stock movements.
+    StockBalanceList:
+      type: object
+      additionalProperties: false
+      required: [storeId, asOfOperationalDate, balances]
+      properties:
+        storeId:
+          type: string
+          format: uuid
+        asOfOperationalDate:
+          type: string
+          format: date
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/StockBalance'
