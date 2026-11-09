@@ -599,9 +599,10 @@ paths:
         their audit records are not overwritten or deleted. effectiveFrom is
         inclusive and is an operational date. The organization must provide
         both a time zone and a local operational-day start; no start time is
-        hard-coded. If operational data already exists, effectiveFrom cannot
-        be on or before the current operational date; a first version may be
-        effective on or before today only while no operational data exists.
+        hard-coded. Once sales, stock movements/counts, or purchasing/budget
+        transactions exist, effectiveFrom cannot be on or before the current
+        operational date; a first version may be effective on or before today
+        while no such transaction has used the calendar.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -719,10 +720,11 @@ paths:
         effective inclusively from the supplied operational date. Each field
         is independent: null or an omitted override inherits the network
         default for that field; send any store-specific value that should
-        continue from this version onward. If operational data already exists,
-        effectiveFrom cannot be on or before the store's current operational
-        date; a first override may be effective on or before today only while
-        no operational data exists.
+        continue from this version onward. Once sales, stock movements/counts,
+        or purchasing/budget transactions exist for the store, effectiveFrom
+        cannot be on or before its current operational date; a first override
+        may be effective on or before today while no such transaction has
+        used the store calendar.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -1054,7 +1056,8 @@ components:
       description: >-
         A calendar version already exists for the requested effectiveFrom date,
         the requested date is not later than the newest recorded version, or it
-        would reinterpret an operational date already used by persisted data.
+        would reinterpret a past or current operational date used by a sales,
+        stock, purchase, or budget transaction.
       content:
         application/json:
           schema:
