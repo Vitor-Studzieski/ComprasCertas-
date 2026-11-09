@@ -4,11 +4,16 @@ info:
   version: 0.1.0
   summary: Draft contract for the first online foundation.
   description: |
-    Initial API contract for the first online cycle. This document is a draft
-    and must be reviewed with the Django implementation before endpoints are
-    considered stable. It covers health, self-service registration, email
-    confirmation, and login. The first product flow starts with a 30-day trial
-    only after email confirmation; no payment method is collected at signup.
+    Draft contract for the first online cycle. All endpoint paths, status
+    codes, payload shapes, validation limits, error representation, and
+    session representation below are provisional pending technical review.
+    Approved product rules: signup collects the network name, administrator
+    name/email, and password; email confirmation is required before any
+    operation; the 30-day trial starts after successful confirmation; signup
+    does not collect CNPJ, address, or payment details. Network administrators
+    and users who approve orders or stock adjustments must complete an
+    architecture-approved second factor before receiving an authenticated
+    session.
 servers:
   - url: /api/v1
     description: Versioned API base path
@@ -16,7 +21,8 @@ paths:
   /health/:
     get:
       operationId: getHealth
-      summary: Check API availability
+      summary: Check API availability (draft)
+      description: Provisional route and response shape; the exact health-check semantics remain to be decided.
       tags: [System]
       security: []
       responses:
@@ -36,10 +42,13 @@ paths:
       operationId: createRegistration
       summary: Start a network's self-service registration
       description: |
-        Creates a pending organization and administrator membership, then sends
-        an email confirmation link. The 30-day trial begins only after the
-        email is confirmed. This draft does not collect CNPJ, address, or
-        payment details at signup.
+        Provisional route, request/response shape, and pre-confirmation state.
+        This draft proposes creating a pending organization and administrator
+        membership and sending an email confirmation link. That transient
+        state and its persistence timing are technical choices for review.
+        Email confirmation is required before any operation; the 30-day trial
+        begins only after successful confirmation. Signup must not collect
+        CNPJ, address, or payment details.
       tags: [Identity]
       security: []
       requestBody:
@@ -58,7 +67,10 @@ paths:
         '400':
           $ref: '#/components/responses/ValidationError'
         '409':
-          description: An account or organization registration conflicts with existing data.
+          description: >-
+            Provisional conflict response. The conditions and status code are
+            undecided; review account-enumeration risk for duplicate email or
+            organization data before fixing this behavior.
           content:
             application/json:
               schema:
@@ -70,9 +82,13 @@ paths:
       operationId: confirmEmail
       summary: Confirm an administrator's email address
       description: |
-        A successful confirmation activates the administrator account and
-        starts the network's 30-day trial. Confirmation tokens are single-use
-        and expire; exact token lifetime is implementation-defined in this draft.
+        Email confirmation is required before any operation. Successful
+        confirmation verifies the administrator's email and starts the
+        network's 30-day trial. The POST route and token-in-request-body shape
+        are provisional. Single-use and expiration rules, token lifetime, and
+        response statuses are pending technical/security review. Confirmation
+        alone does not bypass any required MFA before an authenticated session
+        is issued.
       tags: [Identity]
       security: []
       requestBody:
@@ -86,7 +102,10 @@ paths:
                 token:
                   type: string
                   minLength: 1
-                  description: Single-use token from the confirmation link.
+                  description: >-
+                    Provisional representation of the token received through
+                    the confirmation link; token transport and constraints are
+                    pending review.
       responses:
         '200':
           description: Email confirmed and trial started.
@@ -108,7 +127,9 @@ paths:
         '400':
           $ref: '#/components/responses/ValidationError'
         '410':
-          description: Confirmation token is expired or already used.
+          description: >-
+            Provisional response for an invalidated token; expiry, reuse
+            behavior, and status code are pending review.
           content:
             application/json:
               schema:
@@ -118,8 +139,10 @@ paths:
       operationId: resendEmailConfirmation
       summary: Resend the confirmation email
       description: |
-        The response does not reveal whether the email is registered or already
-        confirmed. A rate limit applies.
+        Provisional route, request/response shape, and account-enumeration
+        behavior. This draft proposes a generic response that does not reveal
+        whether the email is registered or already confirmed. Rate limiting
+        details are also pending review.
       tags: [Identity]
       security: []
       requestBody:
@@ -154,9 +177,18 @@ paths:
       operationId: createSession
       summary: Sign in with email and password
       description: |
-        Draft only. Account verification, MFA requirements by role, token or
-        session mechanism, refresh and revocation semantics require review
-        before implementation.
+        Provisional route and session representation. A confirmed email is
+        required before any operation; credentials for an unconfirmed account
+        must not create an authenticated session. Email/password alone must not
+        create an authenticated session for a network administrator or a user
+        who approves orders or stock adjustments. Those roles must complete an
+        architecture-approved second factor: passkey/Windows Hello or a
+        security key; one-time recovery codes are also approved recovery
+        factors. No provider or protocol is selected here. If no required
+        factor is enrolled, return a non-authenticated enrollment-required
+        state; the enrollment route and representation remain pending. The
+        access-token/session format, refresh/revocation semantics, status codes,
+        and challenge representation are provisional.
       tags: [Identity]
       security: []
       requestBody:
@@ -176,24 +208,61 @@ paths:
                   writeOnly: true
       responses:
         '200':
-          description: Credentials accepted; response shape is provisional.
+          description: >-
+            Provisional result. `authenticated` is returned only after email
+            confirmation and all factors required for the account's roles have
+            been completed. A pending MFA state does not grant access.
           content:
             application/json:
               schema:
-                type: object
-                required: [status]
-                properties:
-                  status:
-                    type: string
-                    const: authenticated
-                  accessToken:
-                    type: string
-                    description: Provisional placeholder; authentication mechanism is not finalized.
-                  expiresAt:
-                    type: string
-                    format: date-time
+                oneOf:
+                  - $ref: '#/components/schemas/SessionAuthenticated'
+                  - $ref: '#/components/schemas/MfaRequired'
+                  - $ref: '#/components/schemas/MfaEnrollmentRequired'
         '401':
-          description: Credentials are invalid or email is not confirmed.
+          description: >-
+            Provisional response for invalid credentials or unconfirmed email;
+            response semantics and anti-enumeration behavior are pending review.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /sessions/mfa/verify/:
+    post:
+      operationId: verifySessionFactor
+      summary: Complete a required second factor (draft)
+      description: |
+        Provisional route and representation for completing login with an
+        already enrolled factor. Only architecture-approved methods are
+        represented: passkey/Windows Hello, security key, or a one-time
+        recovery code. The opaque proof shape intentionally does not select a
+        provider or authentication protocol. A successful response may issue
+        an authenticated session only after confirmation and all required
+        factors; recovery codes are consumed once. Factor enrollment for a
+        newly registered administrator is not specified by this draft and
+        must be defined before that account can receive an authenticated
+        session.
+      tags: [Identity]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MfaVerificationRequest'
+      responses:
+        '200':
+          description: Factor verified; response/session shape is provisional.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionAuthenticated'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: Factor proof could not be verified; response is provisional.
           content:
             application/json:
               schema:
@@ -209,7 +278,7 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
     RateLimited:
-      description: Too many requests.
+      description: Provisional rate-limit response and representation.
       headers:
         Retry-After:
           schema:
@@ -229,20 +298,24 @@ components:
           type: string
           minLength: 2
           maxLength: 160
+          description: Name of the network; length bounds are provisional.
         administratorName:
           type: string
           minLength: 2
           maxLength: 160
+          description: Administrator's name; length bounds are provisional.
         email:
           type: string
           format: email
           maxLength: 254
+          description: Email syntax/length validation is provisional.
         password:
           type: string
           format: password
           writeOnly: true
-          description: Exact password policy is subject to backend validation.
+          description: Password policy and validation limits remain to be decided.
     RegistrationAccepted:
+      description: Provisional response representation.
       type: object
       required: [status, message]
       properties:
@@ -253,6 +326,7 @@ components:
           type: string
           description: Localized message suitable for display to the user.
     Problem:
+      description: Provisional error envelope; codes, fields, and localization contract remain to be decided.
       type: object
       required: [code, message]
       properties:
@@ -267,3 +341,68 @@ components:
             type: array
             items:
               type: string
+    SessionAuthenticated:
+      description: >-
+        Provisional session representation. Issued only after email confirmation
+        and any role-required factors have completed. Token type, security
+        scheme, expiry, and refresh behavior remain undecided.
+      type: object
+      required: [status, accessToken, expiresAt]
+      properties:
+        status:
+          type: string
+          const: authenticated
+        accessToken:
+          type: string
+          description: Placeholder credential; token format and transport are pending review.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Provisional expiry representation.
+    MfaRequired:
+      description: >-
+        Provisional non-authenticated state. It must not contain an access
+        token or otherwise permit operations before required MFA is complete.
+      type: object
+      additionalProperties: false
+      required: [status, challengeId, methods]
+      properties:
+        status:
+          type: string
+          const: second_factor_required
+        challengeId:
+          type: string
+          description: Provisional challenge reference; representation is pending review.
+        methods:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum: [passkey_windows_hello, security_key, recovery_code]
+    MfaEnrollmentRequired:
+      description: >-
+        Provisional non-authenticated state for a privileged account without
+        an enrolled factor. Enrollment route, protocol, and representation
+        remain pending; no access is granted in this state.
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: second_factor_enrollment_required
+    MfaVerificationRequest:
+      description: Provisional request; route and proof schema are pending review.
+      type: object
+      additionalProperties: false
+      required: [challengeId, method, proof]
+      properties:
+        challengeId:
+          type: string
+        method:
+          type: string
+          enum: [passkey_windows_hello, security_key, recovery_code]
+        proof:
+          type: object
+          additionalProperties: true
+          description: Opaque factor proof; exact representation is not specified.
