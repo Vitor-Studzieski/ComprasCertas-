@@ -12,6 +12,7 @@ from rest_framework.status import HTTP_401_UNAUTHORIZED
 from rest_framework.views import APIView
 
 from apps.identity.models import normalize_email_address
+from apps.identity.permissions import MfaForPrivilegedUsers
 from apps.identity.serializers import (
     EmailConfirmationSerializer,
     LoginSerializer,
@@ -21,7 +22,6 @@ from apps.identity.serializers import (
     ResendConfirmationSerializer,
     WebAuthnVerificationSerializer,
 )
-from apps.identity.throttling import IdentityScopedRateThrottle
 from apps.identity.services.authentication import InvalidCredentials, start_password_login
 from apps.identity.services.mfa import (
     InvalidMfaChallenge,
@@ -37,6 +37,7 @@ from apps.identity.services.registration import (
     resend_registration_confirmation,
     start_registration,
 )
+from apps.identity.throttling import IdentityScopedRateThrottle
 
 
 def _validation_response(errors):
@@ -341,7 +342,13 @@ class MfaRecoveryCodeView(IdentityAPIView):
 
 @method_decorator(csrf_protect, name="dispatch")
 class CurrentSessionView(IdentityAPIView):
-    permission_classes = [IsAuthenticated]
+    def get_permissions(self):
+        if self.request.method == "DELETE":
+            return [IsAuthenticated()]
+        return [MfaForPrivilegedUsers()]
+
+    def get(self, request):
+        return Response({"status": "authenticated"})
 
     def delete(self, request):
         logout(request._request)
