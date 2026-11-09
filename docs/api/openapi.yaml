@@ -919,6 +919,8 @@ paths:
         The initial physical count is recorded by an administrator and
         produces immutable audit metadata identifying actor, server time,
         store, closed date, each product/quantity, and the opening movement.
+        The server records the origin; this endpoint always records `manual`,
+        while a future validated spreadsheet flow may record `spreadsheet`.
         All lines are validated and written atomically; on any error no line
         is committed. Quantities are exact decimal
         strings: unit products require integers, kg/l products allow at most
@@ -1719,7 +1721,7 @@ components:
     OpeningStockCount:
       type: object
       additionalProperties: false
-      required: [id, storeId, closedOperationalDate, cutoffDate, lines, createdBy, createdAt]
+      required: [id, storeId, closedOperationalDate, cutoffDate, source, lines, createdBy, createdAt]
       properties:
         id:
           type: string
@@ -1734,6 +1736,10 @@ components:
           type: string
           format: date
           description: First complete operational date after the closed count date.
+        source:
+          type: string
+          enum: [manual, spreadsheet]
+          description: Server-derived origin of the initial count; this endpoint returns manual.
         lines:
           type: array
           items:
