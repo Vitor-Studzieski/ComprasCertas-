@@ -895,7 +895,8 @@ paths:
       summary: Record one atomic opening stock count batch
       description: >-
         Administrator-only. Requires an effective operational calendar for
-        the store and closedOperationalDate. The server derives
+        both the store's current operational date and closedOperationalDate;
+        a future closedOperationalDate is rejected. The server derives
         cutoffDate = closedOperationalDate + 1 operational day. Every line
         must refer to a product in this store's active assortment on
         closedOperationalDate; a complete batch contains one line for every
