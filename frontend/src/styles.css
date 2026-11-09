@@ -51,6 +51,7 @@ h1 { max-width: 480px; margin: 0 0 20px; font-size: clamp(36px, 4.4vw, 54px); fo
 .form-panel { display: flex; flex-direction: column; justify-content: center; padding: 58px clamp(34px, 6vw, 78px); }
 .form-heading { margin-bottom: 24px; }
 .form-heading h2 { margin: 0 0 8px; color: #1c2b25; font-size: 31px; font-weight: 700; }
+.form-heading h2:focus { outline: 2px solid #94c88b; outline-offset: 4px; }
 .form-heading > p:last-child { margin: 0; color: #6e7972; font-size: 13px; }
 .trial-note { display: flex; align-items: center; gap: 13px; margin-bottom: 23px; padding: 13px 15px; color: #56695d; background: #f0f7ec; border: 1px solid #e1efd9; border-radius: 12px; font-size: 12px; line-height: 1.55; }
 .trial-note strong { color: #285137; }

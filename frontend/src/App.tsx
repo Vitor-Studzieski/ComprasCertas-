@@ -48,9 +48,16 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const panelHeading = useRef<HTMLHeadingElement>(null);
+  const previousScreen = useRef(screen);
   const confirmationStarted = useRef(false);
   const hasInteracted = useRef(false);
   const [loginSessionConflict, setLoginSessionConflict] = useState(false);
+
+  useEffect(() => {
+    if (previousScreen.current !== screen) panelHeading.current?.focus();
+    previousScreen.current = screen;
+  }, [screen]);
 
   useEffect(() => {
     if (window.location.pathname.replace(/\/$/, '') === '/confirm-email') return;
@@ -279,7 +286,7 @@ export default function App() {
       <section className="form-panel" aria-labelledby="panel-title">
         <div className="form-heading">
           <p className="eyebrow">CompraCerta</p>
-          <h2 id="panel-title">{panelTitle}</h2>
+          <h2 id="panel-title" ref={panelHeading} tabIndex={-1}>{panelTitle}</h2>
           {screen === 'register' && <p>Configure sua rede e convide sua equipe depois.</p>}
         </div>
 
