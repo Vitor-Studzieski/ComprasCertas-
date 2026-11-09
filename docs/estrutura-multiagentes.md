@@ -48,9 +48,9 @@ Os caminhos são limites propostos para evitar sobreposição; serão conferidos
 ## Sequência de trabalho
 
 1. **Preparação da base — concluída:** o repositório remoto recebeu o bootstrap em `main`; convenções de branches/worktrees e separação de frentes foram registradas.
-2. **Fundação online — em andamento:** a branch `feat/backend-foundation` contém o scaffold Django/PostgreSQL e o endpoint público de saúde; `feat/api-contracts` contém um rascunho OpenAPI para cadastro, confirmação de e-mail, login e MFA; `feat/frontend-foundation` contém o scaffold React/Vite e a primeira tela de cadastro ainda sem integração com a API. As três frentes seguem em branches/worktrees separados; nenhuma representa fluxo funcional completo.
-3. **Fluxo de estoque e compra:** domínio e API entregam cadastro/importação, vendas, saldo, recomendação explicável, orçamento e pedido; o frontend integra esse fluxo e os critérios de aceite.
-4. **Desktop e offline:** iniciar quando contratos de autenticação de dispositivo, outbox e sincronização estiverem definidos. Tauri/SQLite, backups, resolução de conflitos e sincronização não devem ser implementados em paralelo com contratos ainda instáveis.
+2. **Fundação online — em andamento:** `feat/backend-foundation` contém o scaffold Django/PostgreSQL; `feat/api-contracts` descreve o contrato de cadastro, confirmação de e-mail, login e MFA; `feat/frontend-foundation` contém React/Vite e o cadastro ainda sem integração; `feat/identity-registration` implementa cadastro, sessão, WebAuthn/MFA e RLS no backend. São branches/worktrees distintos e ainda não formam um fluxo completo integrado.
+3. **Fluxo online de estoque e compra:** concluir a experiência de identidade no frontend; depois, implementar loja, catálogo, estoque inicial, vendas, recomendação explicável e pedido por loja pela API e pelo navegador.
+4. **Desktop e offline:** ciclo seguinte do MVP, depois do fluxo online. Implementar Tauri/SQLite, backups, resolução de conflitos e sincronização contra contratos aprovados.
 5. **IA de apoio:** iniciar depois que a recomendação determinística estiver disponível como serviço e ferramenta autorizada. A IA explica e prepara; o backend valida regras e a pessoa responsável aprova.
 6. **Integração e liberação:** `project_engineer` revisa dependências e segurança; `project_organizer` verifica o escopo e os critérios de aceite; cada frente entra por pull request.
 
@@ -81,4 +81,4 @@ Resultado esperado no pull request:
 
 ## Situação atual
 
-O repositório GitHub informado já está inicializado, com `main` estável e commits de bootstrap. Existem worktrees para backend, contrato da API e frontend, cada uma em branch própria. Os commits de fundação ainda precisam passar por revisão e integração via pull request. O próximo trabalho online é fechar as decisões técnicas de identidade/MFA e ligar o cadastro à API; depois vêm o fluxo de estoque e compras. Tauri/offline e agentes internos de IA permanecem em ciclos posteriores, conforme a sequência acima.
+O repositório GitHub está inicializado e `main` permanece estável. O usuário autorizou o início da programação. A identidade/MFA está em implementação no backend e o contrato OpenAPI foi atualizado em branch própria; os scaffolds de backend e frontend ainda precisam ser integrados. Nenhum pull request foi integrado à `main`. O próximo marco é ligar cadastro/login no frontend e entregar o primeiro fluxo online de loja, produto e saldo inicial. O `.exe` e offline entram no ciclo seguinte do MVP; agentes internos de IA dependem das regras determinísticas de recomendação.
