@@ -4,6 +4,7 @@ from django.urls import path
 
 from apps.identity.views import (
     CsrfTokenView,
+    CurrentSessionOrganizationView,
     CurrentSessionView,
     EmailConfirmationView,
     MfaAuthenticationOptionsView,
@@ -48,4 +49,9 @@ urlpatterns = [
     ),
     path("sessions/mfa/recovery-code/", MfaRecoveryCodeView.as_view(), name="mfa-recovery-code"),
     path("sessions/current/", CurrentSessionView.as_view(), name="session-current"),
+    path(
+        "sessions/current/organization/",
+        CurrentSessionOrganizationView.as_view(),
+        name="session-current-organization",
+    ),
 ]

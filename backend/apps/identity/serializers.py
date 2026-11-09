@@ -38,6 +38,10 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(min_length=1, max_length=256, write_only=True, trim_whitespace=False)
 
 
+class OrganizationSelectionSerializer(serializers.Serializer):
+    organizationId = serializers.UUIDField()
+
+
 class PreAuthChallengeSerializer(serializers.Serializer):
     challengeId = serializers.UUIDField()
 

@@ -8,7 +8,7 @@ from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from rest_framework.exceptions import Throttled
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.status import HTTP_401_UNAUTHORIZED
+from rest_framework.status import HTTP_401_UNAUTHORIZED, HTTP_404_NOT_FOUND
 from rest_framework.views import APIView
 
 from apps.identity.models import normalize_email_address
@@ -16,6 +16,7 @@ from apps.identity.permissions import MfaForPrivilegedUsers
 from apps.identity.serializers import (
     EmailConfirmationSerializer,
     LoginSerializer,
+    OrganizationSelectionSerializer,
     PreAuthChallengeSerializer,
     RecoveryCodeSerializer,
     RegistrationSerializer,
@@ -30,6 +31,11 @@ from apps.identity.services.mfa import (
     verify_authentication,
     verify_enrollment,
     verify_recovery_code,
+)
+from apps.identity.services.organization_context import (
+    get_current_session_state,
+    select_active_organization,
+    select_sole_active_organization,
 )
 from apps.identity.services.registration import (
     InvalidRegistrationToken,
@@ -93,6 +99,7 @@ def _issue_session(request, user, *, mfa_verified=False):
     request._request.session["mfa_verified"] = bool(mfa_verified)
     if mfa_verified:
         request._request.session["mfa_verified_at"] = timezone.now().isoformat()
+    select_sole_active_organization(user=user, session=request._request.session)
 
 
 class IdentityAPIView(APIView):
@@ -348,8 +355,38 @@ class CurrentSessionView(IdentityAPIView):
         return [MfaForPrivilegedUsers()]
 
     def get(self, request):
-        return Response({"status": "authenticated"})
+        return Response(
+            get_current_session_state(user=request.user, session=request._request.session)
+        )
 
     def delete(self, request):
         logout(request._request)
         return Response(status=204)
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class CurrentSessionOrganizationView(IdentityAPIView):
+    permission_classes = [MfaForPrivilegedUsers]
+
+    def put(self, request):
+        serializer = OrganizationSelectionSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+
+        organization_id = serializer.validated_data["organizationId"]
+        if not select_active_organization(
+            user=request.user,
+            session=request._request.session,
+            organization_id=organization_id,
+        ):
+            return Response(
+                {
+                    "code": "organization_unavailable",
+                    "message": "A organização não está disponível para este usuário.",
+                },
+                status=HTTP_404_NOT_FOUND,
+            )
+
+        return Response(
+            get_current_session_state(user=request.user, session=request._request.session)
+        )
