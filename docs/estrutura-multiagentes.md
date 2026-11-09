@@ -1,6 +1,6 @@
 # Estrutura multiagentes do CompraCerta
 
-**Status:** proposta de organização do desenvolvimento; somente documentação. Nenhum agente de implementação, worktree ou código foi criado.
+**Status:** estrutura de desenvolvimento adotada. `main` contém o bootstrap do repositório; a primeira rodada de implementação começou em worktrees e branches separados. O produto ainda não está operacional.
 
 Este documento complementa [a arquitetura do CompraCerta](arquitetura.md). A equipe de agentes aqui descrita trabalha no código do produto em frentes isoladas. Ela é diferente dos agentes de IA que poderão existir dentro do SaaS.
 
@@ -21,7 +21,7 @@ Este documento complementa [a arquitetura do CompraCerta](arquitetura.md). A equ
 | `project_engineer` | Mantém contratos técnicos, limites entre módulos, decisões de arquitetura e integração entre pull requests; revisa isolamento multi-tenant, transações e sincronização. | Não altera regras de negócio aprovadas nem substitui a aprovação do usuário para decisões de produto. |
 | Orquestrador da tarefa | Mantém o plano da rodada, distribui tarefas compatíveis, resolve conflitos de integração e comunica andamento. | Não permite que dois agentes escrevam na mesma área ao mesmo tempo; encaminha decisões de produto ao usuário. |
 
-`project_organizer` e `project_engineer` podem ser os agentes de coordenação já usados no planejamento. Os papéis abaixo são frentes especializadas de implementação, ativadas quando o projeto entrar em desenvolvimento.
+`project_organizer` e `project_engineer` atuam na coordenação desta rodada. As frentes especializadas abaixo são ativadas conforme as dependências do trabalho.
 
 ## Agentes de implementação
 
@@ -47,8 +47,8 @@ Os caminhos são limites propostos para evitar sobreposição; serão conferidos
 
 ## Sequência de trabalho
 
-1. **Preparação da base:** confirmar a estrutura do repositório, convenções, ambiente local, configuração segura e contrato inicial de organização/usuário/loja. O projeto remoto ainda precisa receber seu primeiro commit antes de existirem branches de trabalho e worktrees.
-2. **Fundação online:** identidade e acesso, modelos do domínio e contratos da API avançam em tarefas separadas após acordarem os limites entre si. O frontend pode iniciar a estrutura visual usando os contratos publicados.
+1. **Preparação da base — concluída:** o repositório remoto recebeu o bootstrap em `main`; convenções de branches/worktrees e separação de frentes foram registradas.
+2. **Fundação online — em andamento:** a branch `feat/backend-foundation` contém o scaffold Django/PostgreSQL e o endpoint público de saúde; `feat/api-contracts` contém um rascunho OpenAPI para cadastro, confirmação de e-mail, login e MFA; `feat/frontend-foundation` contém o scaffold React/Vite e a primeira tela de cadastro ainda sem integração com a API. As três frentes seguem em branches/worktrees separados; nenhuma representa fluxo funcional completo.
 3. **Fluxo de estoque e compra:** domínio e API entregam cadastro/importação, vendas, saldo, recomendação explicável, orçamento e pedido; o frontend integra esse fluxo e os critérios de aceite.
 4. **Desktop e offline:** iniciar quando contratos de autenticação de dispositivo, outbox e sincronização estiverem definidos. Tauri/SQLite, backups, resolução de conflitos e sincronização não devem ser implementados em paralelo com contratos ainda instáveis.
 5. **IA de apoio:** iniciar depois que a recomendação determinística estiver disponível como serviço e ferramenta autorizada. A IA explica e prepara; o backend valida regras e a pessoa responsável aprova.
@@ -81,4 +81,4 @@ Resultado esperado no pull request:
 
 ## Situação atual
 
-A estrutura local contém a documentação do produto; o repositório GitHub informado está vazio e ainda não tem branches. Portanto, a primeira etapa futura será preparar a base do repositório e então abrir worktrees para tarefas reais. Até nova autorização para implementação, esta estrutura permanece apenas como plano documental.
+O repositório GitHub informado já está inicializado, com `main` estável e commits de bootstrap. Existem worktrees para backend, contrato da API e frontend, cada uma em branch própria. Os commits de fundação ainda precisam passar por revisão e integração via pull request. O próximo trabalho online é fechar as decisões técnicas de identidade/MFA e ligar o cadastro à API; depois vêm o fluxo de estoque e compras. Tauri/offline e agentes internos de IA permanecem em ciclos posteriores, conforme a sequência acima.

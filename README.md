@@ -4,7 +4,7 @@ Plataforma SaaS para pequenas redes de mercados e lojas de conveniência adminis
 
 ## Estado do projeto
 
-O projeto está iniciando a implementação. A arquitetura e o fluxo de desenvolvimento multiagentes estão documentados; a aplicação ainda não está pronta para uso.
+A base de desenvolvimento foi inicializada e as primeiras frentes começaram em branches/worktrees separados: scaffold Django, contrato OpenAPI draft e scaffold React com cadastro ainda sem conexão à API. Nenhum fluxo de produto está pronto para operação; a arquitetura e o processo multiagente estão documentados.
 
 ## Direção técnica
 
@@ -21,5 +21,5 @@ O projeto está iniciando a implementação. A arquitetura e o fluxo de desenvol
 
 ## Desenvolvimento
 
-`main` é a branch estável. Cada tarefa deve ser desenvolvida em uma branch e worktree próprios e integrada por pull request. Consulte [CONTRIBUTING.md](CONTRIBUTING.md) antes de iniciar uma frente.
+`main` é a branch estável. Cada tarefa deve ser desenvolvida em uma branch e worktree próprios e integrada por pull request. Consulte [CONTRIBUTING.md](CONTRIBUTING.md) antes de iniciar uma frente. Os ciclos iniciais são online; Tauri/offline e agentes internos de IA virão depois que os contratos centrais estiverem estáveis.
 
