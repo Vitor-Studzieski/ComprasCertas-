@@ -1,0 +1,269 @@
+openapi: 3.1.0
+info:
+  title: CompraCerta API
+  version: 0.1.0
+  summary: Draft contract for the first online foundation.
+  description: |
+    Initial API contract for the first online cycle. This document is a draft
+    and must be reviewed with the Django implementation before endpoints are
+    considered stable. It covers health, self-service registration, email
+    confirmation, and login. The first product flow starts with a 30-day trial
+    only after email confirmation; no payment method is collected at signup.
+servers:
+  - url: /api/v1
+    description: Versioned API base path
+paths:
+  /health/:
+    get:
+      operationId: getHealth
+      summary: Check API availability
+      tags: [System]
+      security: []
+      responses:
+        '200':
+          description: API is available.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+  /registrations/:
+    post:
+      operationId: createRegistration
+      summary: Start a network's self-service registration
+      description: |
+        Creates a pending organization and administrator membership, then sends
+        an email confirmation link. The 30-day trial begins only after the
+        email is confirmed. This draft does not collect CNPJ, address, or
+        payment details at signup.
+      tags: [Identity]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationRequest'
+      responses:
+        '202':
+          description: Registration accepted; confirmation is required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrationAccepted'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: An account or organization registration conflicts with existing data.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /email-confirmations/:
+    post:
+      operationId: confirmEmail
+      summary: Confirm an administrator's email address
+      description: |
+        A successful confirmation activates the administrator account and
+        starts the network's 30-day trial. Confirmation tokens are single-use
+        and expire; exact token lifetime is implementation-defined in this draft.
+      tags: [Identity]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  minLength: 1
+                  description: Single-use token from the confirmation link.
+      responses:
+        '200':
+          description: Email confirmed and trial started.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, trialStartsAt, trialEndsAt]
+                properties:
+                  status:
+                    type: string
+                    const: confirmed
+                  trialStartsAt:
+                    type: string
+                    format: date-time
+                  trialEndsAt:
+                    type: string
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '410':
+          description: Confirmation token is expired or already used.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /email-confirmations/resend/:
+    post:
+      operationId: resendEmailConfirmation
+      summary: Resend the confirmation email
+      description: |
+        The response does not reveal whether the email is registered or already
+        confirmed. A rate limit applies.
+      tags: [Identity]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        '202':
+          description: Request accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: accepted
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /sessions/:
+    post:
+      operationId: createSession
+      summary: Sign in with email and password
+      description: |
+        Draft only. Account verification, MFA requirements by role, token or
+        session mechanism, refresh and revocation semantics require review
+        before implementation.
+      tags: [Identity]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+                  writeOnly: true
+      responses:
+        '200':
+          description: Credentials accepted; response shape is provisional.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: authenticated
+                  accessToken:
+                    type: string
+                    description: Provisional placeholder; authentication mechanism is not finalized.
+                  expiresAt:
+                    type: string
+                    format: date-time
+        '401':
+          description: Credentials are invalid or email is not confirmed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+components:
+  responses:
+    ValidationError:
+      description: Request validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    RateLimited:
+      description: Too many requests.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds before retrying.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+  schemas:
+    RegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [organizationName, administratorName, email, password]
+      properties:
+        organizationName:
+          type: string
+          minLength: 2
+          maxLength: 160
+        administratorName:
+          type: string
+          minLength: 2
+          maxLength: 160
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          description: Exact password policy is subject to backend validation.
+    RegistrationAccepted:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          const: confirmation_required
+        message:
+          type: string
+          description: Localized message suitable for display to the user.
+    Problem:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+          description: Safe, localized summary that does not expose secrets.
+        fields:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
