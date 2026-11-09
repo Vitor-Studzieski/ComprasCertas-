@@ -63,6 +63,22 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   return await response.json() as T;
 }
 
+export async function apiPut<T>(path: string, body: unknown): Promise<T> {
+  const token = csrfToken || await loadCsrfToken();
+  const response = await fetch(`${API_ROOT}${path}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': token,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) throw new ApiError(response.status, await readProblem(response));
+  return await response.json() as T;
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const response = await fetch(`${API_ROOT}${path}`, { credentials: 'include' });
   if (!response.ok) throw new ApiError(response.status, await readProblem(response));

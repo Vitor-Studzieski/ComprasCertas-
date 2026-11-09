@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { apiDelete, apiGet, apiPost, ApiError, refreshCsrfToken } from './api';
+import { apiDelete, apiGet, apiPost, apiPut, ApiError, refreshCsrfToken } from './api';
 import { createWebAuthnCredential, getWebAuthnAssertion } from './webauthn';
 
 type RegistrationForm = {
@@ -9,7 +9,17 @@ type RegistrationForm = {
   password: string;
 };
 
-type Screen = 'register' | 'pending' | 'confirming' | 'login' | 'enrollment' | 'mfa' | 'recovery-codes' | 'authenticated';
+type Screen = 'register' | 'pending' | 'confirming' | 'login' | 'enrollment' | 'mfa' | 'recovery-codes' | 'organization-selection' | 'no-memberships' | 'authenticated';
+type OrganizationMembership = {
+  id: string;
+  name: string;
+  role: string;
+};
+type CurrentSessionResponse = {
+  status: 'authenticated' | 'organization_selection_required';
+  activeOrganizationId: string | null;
+  organizations: OrganizationMembership[];
+};
 type LoginResponse = {
   status: 'authenticated' | 'second_factor_required' | 'second_factor_enrollment_required';
   challengeId?: string;
@@ -42,6 +52,9 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [challengeId, setChallengeId] = useState('');
   const [methods, setMethods] = useState<LoginResponse['methods']>([]);
+  const [organizations, setOrganizations] = useState<OrganizationMembership[]>([]);
+  const [activeOrganizationId, setActiveOrganizationId] = useState<string | null>(null);
+  const [pendingOrganizationId, setPendingOrganizationId] = useState('');
   const [recoveryCode, setRecoveryCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
   const [showRecoveryInput, setShowRecoveryInput] = useState(false);
@@ -54,6 +67,33 @@ export default function App() {
   const hasInteracted = useRef(false);
   const [loginSessionConflict, setLoginSessionConflict] = useState(false);
 
+  function applySessionContext(context: CurrentSessionResponse) {
+    const activeMembership = context.organizations.find(
+      (organization) => organization.id === context.activeOrganizationId,
+    );
+    setOrganizations(context.organizations);
+    setActiveOrganizationId(activeMembership?.id ?? null);
+    setPendingOrganizationId(
+      activeMembership?.id ?? (context.organizations.length === 1 ? context.organizations[0].id : ''),
+    );
+
+    if (context.organizations.length === 0) {
+      setScreen('no-memberships');
+      return;
+    }
+    if (context.status === 'organization_selection_required' || !activeMembership) {
+      setScreen('organization-selection');
+      return;
+    }
+    setScreen('authenticated');
+  }
+
+  async function loadSessionContext() {
+    const context = await apiGet<CurrentSessionResponse>('/sessions/current/');
+    applySessionContext(context);
+    return context;
+  }
+
   useEffect(() => {
     if (previousScreen.current !== screen) panelHeading.current?.focus();
     previousScreen.current = screen;
@@ -62,9 +102,9 @@ export default function App() {
   useEffect(() => {
     if (window.location.pathname.replace(/\/$/, '') === '/confirm-email') return;
     let cancelled = false;
-    apiGet<{ status: string }>('/sessions/current/')
-      .then(() => {
-        if (!cancelled && !hasInteracted.current) setScreen('authenticated');
+    apiGet<CurrentSessionResponse>('/sessions/current/')
+      .then((context) => {
+        if (!cancelled && !hasInteracted.current) applySessionContext(context);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -150,7 +190,7 @@ export default function App() {
       setPassword('');
       if (result.status === 'authenticated') {
         await refreshCsrfToken();
-        setScreen('authenticated');
+        await loadSessionContext();
       } else {
         setChallengeId(result.challengeId ?? '');
         setMethods(result.methods ?? []);
@@ -201,7 +241,7 @@ export default function App() {
       const credential = await getWebAuthnAssertion(options);
       await apiPost('/sessions/mfa/authentication/verify/', { challengeId, credential });
       await refreshCsrfToken();
-      setScreen('authenticated');
+      await loadSessionContext();
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -217,7 +257,7 @@ export default function App() {
       await apiPost('/sessions/mfa/recovery-code/', { challengeId, recoveryCode });
       await refreshCsrfToken();
       setRecoveryCode('');
-      setScreen('authenticated');
+      await loadSessionContext();
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -232,8 +272,46 @@ export default function App() {
       await apiDelete('/sessions/current/');
       await refreshCsrfToken();
       setLoginSessionConflict(false);
+      setOrganizations([]);
+      setActiveOrganizationId(null);
+      setPendingOrganizationId('');
       setScreen('login');
       setNotice('Você saiu da sua conta.');
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function selectOrganization(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const context = await apiPut<CurrentSessionResponse>(
+        '/sessions/current/organization/',
+        { organizationId: pendingOrganizationId },
+      );
+      applySessionContext(context);
+      if (context.activeOrganizationId) {
+        const selected = context.organizations.find((organization) => organization.id === context.activeOrganizationId);
+        if (selected) setNotice(`Rede ativa: ${selected.name}.`);
+      }
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function continueAfterRecoveryCodes() {
+    setBusy(true);
+    setError('');
+    try {
+      await loadSessionContext();
+      setRecoveryCodes([]);
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -256,6 +334,8 @@ export default function App() {
     enrollment: 'Proteja sua conta',
     mfa: 'Confirme sua identidade',
     'recovery-codes': 'Guarde seus códigos',
+    'organization-selection': 'Selecione sua rede',
+    'no-memberships': 'Nenhuma rede vinculada',
     authenticated: 'Acesso liberado',
   }[screen];
 
@@ -372,13 +452,49 @@ export default function App() {
             <ul className="recovery-codes" aria-label="Códigos de recuperação">
               {recoveryCodes.map((code) => <li key={code}><code>{code}</code></li>)}
             </ul>
-            <button className="submit-button" onClick={() => { setRecoveryCodes([]); setScreen('authenticated'); }} type="button">Guardei os códigos, continuar</button>
+            <button className="submit-button" disabled={busy} onClick={continueAfterRecoveryCodes} type="button">{busy ? 'Carregando redes...' : 'Guardei os códigos, continuar'}</button>
+          </div>
+        )}
+
+        {screen === 'organization-selection' && (
+          <div className="confirmation-state">
+            <p className="confirmation-copy">Escolha a rede que deseja acessar. A seleção define o contexto da sessão; o servidor continua validando suas permissões em cada operação.</p>
+            <form className="registration-form" onSubmit={selectOrganization} aria-busy={busy}>
+              <label htmlFor="activeOrganization">Rede</label>
+              <select
+                className="organization-select"
+                disabled={busy}
+                id="activeOrganization"
+                onChange={(event) => setPendingOrganizationId(event.target.value)}
+                required
+                value={pendingOrganizationId}
+              >
+                {organizations.length !== 1 && <option disabled value="">Selecione uma rede</option>}
+                {organizations.map((organization) => (
+                  <option key={organization.id} value={organization.id}>
+                    {organization.name} · {roleLabel(organization.role)}
+                  </option>
+                ))}
+              </select>
+              <button className="submit-button" disabled={busy || !pendingOrganizationId} type="submit">{busy ? 'Selecionando...' : 'Acessar rede'}</button>
+            </form>
+            {activeOrganizationId && <button className="text-button standalone-link" disabled={busy} onClick={() => setScreen('authenticated')} type="button">Voltar à rede ativa</button>}
+            <button className="secondary-button" disabled={busy} onClick={signOut} type="button">Sair da conta</button>
+          </div>
+        )}
+
+        {screen === 'no-memberships' && (
+          <div className="confirmation-state">
+            <p className="confirmation-copy">Sua conta está conectada, mas não tem vínculo ativo com nenhuma rede. Você não tem acesso a lojas nem a dados operacionais. Peça ao administrador da rede um convite.</p>
+            <button className="secondary-button" disabled={busy} onClick={signOut} type="button">{busy ? 'Saindo...' : 'Sair da conta'}</button>
           </div>
         )}
 
         {screen === 'authenticated' && (
           <div className="confirmation-state">
-            <p className="confirmation-copy">Sua sessão está ativa. O próximo passo é configurar a primeira loja e os produtos da rede.</p>
+            <p className="confirmation-copy">Sua sessão está ativa na rede <strong>{organizations.find((organization) => organization.id === activeOrganizationId)?.name}</strong>.</p>
+            <p className="field-hint">Perfil nesta rede: {roleLabel(organizations.find((organization) => organization.id === activeOrganizationId)?.role ?? '')}</p>
+            {organizations.length > 1 && <button className="secondary-button" disabled={busy} onClick={() => setScreen('organization-selection')} type="button">Trocar de rede</button>}
             <button className="secondary-button" disabled={busy} onClick={signOut} type="button">{busy ? 'Saindo...' : 'Sair da conta'}</button>
           </div>
         )}
@@ -387,4 +503,14 @@ export default function App() {
       </section>
     </main>
   );
+}
+
+function roleLabel(role: string): string {
+  const labels: Record<string, string> = {
+    administrator: 'Administrador da rede',
+    store_manager: 'Gerente de loja',
+    operator: 'Operador',
+    buyer: 'Comprador/aprovador',
+  };
+  return labels[role] ?? role;
 }
