@@ -4,7 +4,7 @@ Plataforma SaaS para pequenas redes de mercados e lojas de conveniência adminis
 
 ## Estado do projeto
 
-A base de desenvolvimento foi inicializada e as primeiras frentes começaram em branches/worktrees separados: scaffold Django, contrato OpenAPI draft e scaffold React com cadastro ainda sem conexão à API. Nenhum fluxo de produto está pronto para operação; a arquitetura e o processo multiagente estão documentados.
+A base de desenvolvimento e a identidade online estão em implementação em branches/worktrees separados. O contrato OpenAPI cobre o calendário operacional e o cadastro do estoque de abertura; as frentes atuais implementam configuração de loja, produtos, sortimento e contagem inicial. Ainda não há um fluxo de produto completo pronto para operação; a arquitetura e o processo multiagente estão documentados.
 
 ## Direção técnica
 
