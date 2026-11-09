@@ -423,4 +423,4 @@ Os números do exemplo são ilustrativos; quantidade e fornecedor devem ser calc
 
 ## Próximo passo
 
-O usuário autorizou o início da programação. A identidade e o contrato da API estão sendo implementados em worktrees separados; a sequência imediata é fechar a fundação online, integrar a experiência web de cadastro/login e entregar loja, produto e saldo inicial. O `.exe` e o offline entram depois do fluxo online, ainda dentro do MVP. Cobrança, conectores, operação offline e exclusão segura após 90 dias continuam como etapas próprias; nenhum pull request foi integrado à `main`.
+O usuário autorizou o início da programação. O contrato OpenAPI, o backend de identidade/MFA e a interface web de cadastro/login estão em branches e worktrees separados, com PRs draft. A sequência imediata é revisar e integrar as fundações, exercitar o onboarding online e depois entregar loja, produto e saldo inicial. O `.exe` e o offline entram depois do fluxo online, ainda dentro do MVP. Cobrança, conectores, operação offline e exclusão segura após 90 dias continuam como etapas próprias; nenhum pull request foi integrado à `main`.
