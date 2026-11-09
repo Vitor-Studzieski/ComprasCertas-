@@ -18,7 +18,15 @@ info:
     from that session. They accept no organizationId authority from the client;
     every listed endpoint in this slice is administrator-only, and browser
     writes require CSRF. A tenant operation is unavailable until an active
-    organization is selected when the user has multiple memberships.
+    organization is selected when the user has multiple memberships. Before a
+    store can record sales or perform stock operations, it must resolve an
+    effective IANA time zone and operational-day start from the network or a
+    store override; no implicit start-time default is used. Missing calendar
+    configuration blocks the operation with 409 operational_calendar_required.
+    After calendar setup, an administrator may record the store's initial
+    physical stock count as audited opening movements. This initial slice
+    exposes only SKU, name, and base unit for products; category and barcode
+    are deferred to catalog enrichment before recommendation endpoints ship.
 servers:
   - url: /api/v1
     description: Versioned API base path
@@ -591,7 +599,9 @@ paths:
         their audit records are not overwritten or deleted. effectiveFrom is
         inclusive and is an operational date. The organization must provide
         both a time zone and a local operational-day start; no start time is
-        hard-coded.
+        hard-coded. If operational data already exists, effectiveFrom cannot
+        be on or before the current operational date; a first version may be
+        effective on or before today only while no operational data exists.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -709,7 +719,10 @@ paths:
         effective inclusively from the supplied operational date. Each field
         is independent: null or an omitted override inherits the network
         default for that field; send any store-specific value that should
-        continue from this version onward.
+        continue from this version onward. If operational data already exists,
+        effectiveFrom cannot be on or before the store's current operational
+        date; a first override may be effective on or before today only while
+        no operational data exists.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -764,7 +777,8 @@ paths:
         Administrator-only. The organization is derived from the validated
         active session. SKU must be unique within that organization. Base-unit
         quantities are exact decimals: unit is countable in whole numbers, kg
-        and l accept up to three decimal places.
+        and l accept up to three decimal places. This initial catalog slice
+        omits category and barcode; add those fields before recommendations.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -824,6 +838,7 @@ paths:
         validated active organization. Creates an audited date-effective link
         using [effectiveFrom, effectiveTo), with an optional exclusive end.
         The active organization is derived from the session, not a client ID.
+        If effectiveTo is supplied, it must be later than effectiveFrom.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -901,8 +916,11 @@ paths:
         must refer to a product in this store's active assortment on
         closedOperationalDate; a complete batch contains one line for every
         product active in the assortment, including explicit zero counts.
-        All lines are validated and written as opening movements atomically;
-        on any error no line is committed. Quantities are exact decimal
+        The initial physical count is recorded by an administrator and
+        produces immutable audit metadata identifying actor, server time,
+        store, closed date, each product/quantity, and the opening movement.
+        All lines are validated and written atomically; on any error no line
+        is committed. Quantities are exact decimal
         strings: unit products require integers, kg/l products allow at most
         three fractional places, and values are never rounded.
       tags: [Inventory]
@@ -1033,7 +1051,8 @@ components:
     OperationalCalendarVersionConflict:
       description: >-
         A calendar version already exists for the requested effectiveFrom date,
-        or the requested date is not later than the newest recorded version.
+        the requested date is not later than the newest recorded version, or it
+        would reinterpret an operational date already used by persisted data.
       content:
         application/json:
           schema:
@@ -1595,7 +1614,9 @@ components:
         effectiveTo:
           type: [string, 'null']
           format: date
-          description: Optional exclusive end date; null means no scheduled end.
+          description: >-
+            Optional exclusive end date; null means no scheduled end. When
+            supplied, it must be later than effectiveFrom.
     StoreProductAssortmentCloseRequest:
       type: object
       additionalProperties: false
@@ -1665,7 +1686,7 @@ components:
           format: uuid
         quantity:
           type: string
-          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
           description: Exact decimal string; whole for unit and at most three fractional digits for kg/l.
     OpeningStockCountRequest:
       type: object
@@ -1694,7 +1715,7 @@ components:
           format: uuid
         quantity:
           type: string
-          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
     OpeningStockCount:
       type: object
       additionalProperties: false
@@ -1740,7 +1761,7 @@ components:
           enum: [unit, kg, l]
         quantity:
           type: string
-          pattern: '^-?(0|[1-9][0-9]*)(\.[0-9]+)?$'
+          pattern: '^-?(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
           description: Exact decimal string aggregated from stock movements.
     StockBalanceList:
       type: object
