@@ -4,16 +4,16 @@ info:
   version: 0.1.0
   summary: Draft contract for the first online foundation.
   description: |
-    Draft contract for the first online cycle. All endpoint paths, status
-    codes, payload shapes, validation limits, error representation, and
-    session representation below are provisional pending technical review.
-    Approved product rules: signup collects the network name, administrator
-    name/email, and password; email confirmation is required before any
-    operation; the 30-day trial starts after successful confirmation; signup
-    does not collect CNPJ, address, or payment details. Network administrators
-    and users who approve orders or stock adjustments must complete an
-    architecture-approved second factor before receiving an authenticated
-    session.
+    Draft contract for the first online cycle. Route details, status codes,
+    token lifetime, WebAuthn RP ID/origins, and validation limits remain
+    provisional. Approved product rules: signup collects network name,
+    administrator name/email, and password; email confirmation is required
+    before operating; the 30-day trial starts at confirmation; no CNPJ,
+    address, or payment details are collected at signup. A global user may
+    join another network only through a separate invitation. Administrators
+    and people who approve orders or stock adjustments must complete MFA
+    before an authenticated session is issued. The technical draft uses
+    WebAuthn and server-side Django sessions; it does not use bearer/JWT tokens.
 servers:
   - url: /api/v1
     description: Versioned API base path
@@ -42,15 +42,19 @@ paths:
       operationId: createRegistration
       summary: Start a network's self-service registration
       description: |
-        Provisional route, request/response shape, and pre-confirmation state.
-        This draft proposes creating a pending organization and administrator
-        membership and sending an email confirmation link. That transient
-        state and its persistence timing are technical choices for review.
-        Email confirmation is required before any operation; the 30-day trial
-        begins only after successful confirmation. Signup must not collect
-        CNPJ, address, or payment details.
+        Creates only a pending registration intent and sends an email
+        confirmation link; it does not create a usable organization or
+        membership. On confirmation, the backend creates the global user,
+        organization, active administrator membership, and 30-day trial in one
+        transaction. The trial starts at the confirmation time and no session
+        is issued by confirmation. An email that already belongs to a global
+        account cannot self-create another network; additional memberships
+        require an invitation. The response is generic for new and existing
+        accounts to reduce account enumeration. Route and payload details
+        remain provisional.
       tags: [Identity]
-      security: []
+      security:
+        - CsrfHeader: []
       requestBody:
         required: true
         content:
@@ -59,22 +63,15 @@ paths:
               $ref: '#/components/schemas/RegistrationRequest'
       responses:
         '202':
-          description: Registration accepted; confirmation is required.
+          description: >-
+            Generic response for an eligible registration request. The same
+            response is used when the email already belongs to an account.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/RegistrationAccepted'
         '400':
           $ref: '#/components/responses/ValidationError'
-        '409':
-          description: >-
-            Provisional conflict response. The conditions and status code are
-            undecided; review account-enumeration risk for duplicate email or
-            organization data before fixing this behavior.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
   /email-confirmations/:
@@ -82,15 +79,17 @@ paths:
       operationId: confirmEmail
       summary: Confirm an administrator's email address
       description: |
-        Email confirmation is required before any operation. Successful
-        confirmation verifies the administrator's email and starts the
-        network's 30-day trial. The POST route and token-in-request-body shape
-        are provisional. Single-use and expiration rules, token lifetime, and
-        response statuses are pending technical/security review. Confirmation
-        alone does not bypass any required MFA before an authenticated session
-        is issued.
+        Email confirmation is required before operating. Successful
+        confirmation verifies the email and atomically creates the global user,
+        organization, active administrator membership, and 30-day trial. The
+        trial starts at the confirmation timestamp and ends exactly 30 days
+        later. Confirmation does not issue a session; the administrator must
+        sign in and complete MFA enrollment first. The POST route, token
+        transport/lifetime, and invalid-token response are provisional. A
+        repeated confirmation must not create duplicate organizations or trials.
       tags: [Identity]
-      security: []
+      security:
+        - CsrfHeader: []
       requestBody:
         required: true
         content:
@@ -108,7 +107,9 @@ paths:
                     pending review.
       responses:
         '200':
-          description: Email confirmed and trial started.
+          description: >-
+            Email confirmed, organization and administrator membership created,
+            and 30-day trial started. No authenticated session is created.
           content:
             application/json:
               schema:
@@ -139,12 +140,13 @@ paths:
       operationId: resendEmailConfirmation
       summary: Resend the confirmation email
       description: |
-        Provisional route, request/response shape, and account-enumeration
-        behavior. This draft proposes a generic response that does not reveal
-        whether the email is registered or already confirmed. Rate limiting
-        details are also pending review.
+        Sends a generic message that does not disclose whether the email is
+        registered, pending, or already confirmed. For an existing account,
+        any additional network membership still requires a separate invitation.
+        Rate limit values and token lifetime remain provisional.
       tags: [Identity]
-      security: []
+      security:
+        - CsrfHeader: []
       requestBody:
         required: true
         content:
@@ -172,25 +174,53 @@ paths:
           $ref: '#/components/responses/ValidationError'
         '429':
           $ref: '#/components/responses/RateLimited'
+  /csrf/:
+    get:
+      operationId: getCsrfToken
+      summary: Obtain a CSRF token for browser requests
+      description: >-
+        Provisional bootstrap endpoint. Browser clients call this before
+        registration, email confirmation, login, or other unsafe requests.
+        The response sets Django's CSRF cookie and returns the masked token;
+        browser clients send that token in X-CSRFToken on unsafe requests. The
+        API validates it with Django CSRF protection, including on anonymous
+        login requests. The client includes credentials for same-origin calls.
+      tags: [Security]
+      security: []
+      responses:
+        '200':
+          description: CSRF cookie and token issued.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Django CSRF cookie; not an authentication session.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [csrfToken]
+                properties:
+                  csrfToken:
+                    type: string
   /sessions/:
     post:
       operationId: createSession
       summary: Sign in with email and password
       description: |
-        Provisional route and session representation. A confirmed email is
-        required before any operation; credentials for an unconfirmed account
-        must not create an authenticated session. Email/password alone must not
-        create an authenticated session for a network administrator or a user
-        who approves orders or stock adjustments. Those roles must complete an
-        architecture-approved second factor: passkey/Windows Hello or a
-        security key; one-time recovery codes are also approved recovery
-        factors. No provider or protocol is selected here. If no required
-        factor is enrolled, return a non-authenticated enrollment-required
-        state; the enrollment route and representation remain pending. The
-        access-token/session format, refresh/revocation semantics, status codes,
-        and challenge representation are provisional.
+        Provisional route and response representation. The email must be
+        confirmed. A global user with any active administrator or approval
+        membership must complete MFA before a session is issued. If no factor
+        is enrolled, return an enrollment-required pre-authentication state;
+        otherwise return an authentication-required pre-authentication state.
+        Neither state is an application session. A session is created only
+        after all required factors pass. Sessions are server-side Django
+        sessions carried in a Secure, HttpOnly, SameSite cookie. Unsafe browser
+        requests use an explicit CSRF token. No provider, RP ID, origin, or
+        production domain is selected here.
       tags: [Identity]
-      security: []
+      security:
+        - CsrfHeader: []
       requestBody:
         required: true
         content:
@@ -209,9 +239,18 @@ paths:
       responses:
         '200':
           description: >-
-            Provisional result. `authenticated` is returned only after email
-            confirmation and all factors required for the account's roles have
-            been completed. A pending MFA state does not grant access.
+            Password accepted. The response is one of: authenticated (only
+            when MFA is not required), second_factor_required, or
+            second_factor_enrollment_required. A session cookie is set only
+            for the authenticated state; pre-authentication states do not set
+            an application session.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: >-
+                Secure, HttpOnly, SameSite server-side session cookie; present
+                only when the response status is authenticated.
           content:
             application/json:
               schema:
@@ -220,41 +259,133 @@ paths:
                   - $ref: '#/components/schemas/MfaRequired'
                   - $ref: '#/components/schemas/MfaEnrollmentRequired'
         '401':
-          description: >-
-            Provisional response for invalid credentials or unconfirmed email;
-            response semantics and anti-enumeration behavior are pending review.
+          description: Invalid credentials or unconfirmed email; details are generic.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Problem'
         '429':
           $ref: '#/components/responses/RateLimited'
-  /sessions/mfa/verify/:
+  /sessions/mfa/enrollment/options/:
     post:
-      operationId: verifySessionFactor
-      summary: Complete a required second factor (draft)
-      description: |
-        Provisional route and representation for completing login with an
-        already enrolled factor. Only architecture-approved methods are
-        represented: passkey/Windows Hello, security key, or a one-time
-        recovery code. The opaque proof shape intentionally does not select a
-        provider or authentication protocol. A successful response may issue
-        an authenticated session only after confirmation and all required
-        factors; recovery codes are consumed once. Factor enrollment for a
-        newly registered administrator is not specified by this draft and
-        must be defined before that account can receive an authenticated
-        session.
+      operationId: createMfaEnrollmentOptions
+      summary: Begin WebAuthn enrollment for a privileged account
+      description: >-
+        Uses a short-lived pre-authentication challenge from login. This does
+        not create an application session. RP ID, origins, timeout, and exact
+        WebAuthn options are deployment configuration and remain provisional.
       tags: [Identity]
-      security: []
+      security:
+        - CsrfHeader: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/MfaVerificationRequest'
+              $ref: '#/components/schemas/PreAuthChallengeRequest'
       responses:
         '200':
-          description: Factor verified; response/session shape is provisional.
+          description: WebAuthn credential-creation options.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebAuthnOptions'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: Challenge invalid, expired, or already used.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /sessions/mfa/enrollment/verify/:
+    post:
+      operationId: verifyMfaEnrollment
+      summary: Verify and save a new WebAuthn credential
+      description: >-
+        The server verifies the WebAuthn registration response against the
+        stored challenge, expected origin and RP ID, and required user
+        verification. On success, it stores public credential data, issues
+        the first session, and returns recovery codes once. Private key
+        material is never sent to or stored by CompraCerta.
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebAuthnVerificationRequest'
+      responses:
+        '200':
+          description: Enrollment verified; session cookie issued and recovery codes shown once.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Secure, HttpOnly, SameSite server-side session cookie.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MfaEnrollmentComplete'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: Challenge or WebAuthn response could not be verified.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /sessions/mfa/authentication/options/:
+    post:
+      operationId: createMfaAuthenticationOptions
+      summary: Begin WebAuthn verification during login
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreAuthChallengeRequest'
+      responses:
+        '200':
+          description: WebAuthn assertion options.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebAuthnOptions'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: Challenge invalid, expired, or already used.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /sessions/mfa/authentication/verify/:
+    post:
+      operationId: verifyMfaAuthentication
+      summary: Verify a WebAuthn assertion and create a session
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebAuthnVerificationRequest'
+      responses:
+        '200':
+          description: MFA verified and server-side session cookie issued.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Secure, HttpOnly, SameSite server-side session cookie.
           content:
             application/json:
               schema:
@@ -262,14 +393,77 @@ paths:
         '400':
           $ref: '#/components/responses/ValidationError'
         '401':
-          description: Factor proof could not be verified; response is provisional.
+          description: Challenge or WebAuthn response could not be verified.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Problem'
-        '429':
-          $ref: '#/components/responses/RateLimited'
+  /sessions/mfa/recovery-code/:
+    post:
+      operationId: verifyRecoveryCode
+      summary: Use a one-time recovery code during login
+      description: The recovery code is consumed atomically and cannot be reused.
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [challengeId, recoveryCode]
+              properties:
+                challengeId:
+                  type: string
+                recoveryCode:
+                  type: string
+                  writeOnly: true
+      responses:
+        '200':
+          description: Recovery code accepted and server-side session cookie issued.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Secure, HttpOnly, SameSite server-side session cookie.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionAuthenticated'
+        '401':
+          description: Recovery code is invalid, expired, or already used.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /sessions/current/:
+    delete:
+      operationId: deleteCurrentSession
+      summary: Sign out of the current session
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      responses:
+        '204':
+          description: Session invalidated.
+        '401':
+          description: No active session.
+
 components:
+  securitySchemes:
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: sessionid
+      description: Opaque server-side Django session; exact cookie attributes are deployment configuration.
+    CsrfHeader:
+      type: apiKey
+      in: header
+      name: X-CSRFToken
+      description: CSRF token obtained from GET /csrf/; required on unsafe browser requests.
   responses:
     ValidationError:
       description: Request validation failed.
@@ -343,26 +537,20 @@ components:
               type: string
     SessionAuthenticated:
       description: >-
-        Provisional session representation. Issued only after email confirmation
-        and any role-required factors have completed. Token type, security
-        scheme, expiry, and refresh behavior remain undecided.
+        Successful authenticated state. The credential is in the server-side
+        session cookie, never in a response body. This schema is returned only
+        after email confirmation and all role-required factors are complete.
       type: object
-      required: [status, accessToken, expiresAt]
+      required: [status]
       properties:
         status:
           type: string
           const: authenticated
-        accessToken:
-          type: string
-          description: Placeholder credential; token format and transport are pending review.
-        expiresAt:
-          type: string
-          format: date-time
-          description: Provisional expiry representation.
     MfaRequired:
       description: >-
-        Provisional non-authenticated state. It must not contain an access
-        token or otherwise permit operations before required MFA is complete.
+        Pre-authentication state only. It has no session cookie and cannot
+        access any application operation. The challenge is short-lived,
+        single-use, bound to the user and purpose, and attempt-limited.
       type: object
       additionalProperties: false
       required: [status, challengeId, methods]
@@ -372,37 +560,74 @@ components:
           const: second_factor_required
         challengeId:
           type: string
-          description: Provisional challenge reference; representation is pending review.
+          description: Opaque reference to a short-lived server-side challenge; not an access token.
         methods:
           type: array
           uniqueItems: true
           items:
             type: string
-            enum: [passkey_windows_hello, security_key, recovery_code]
+            enum: [webauthn, recovery_code]
     MfaEnrollmentRequired:
       description: >-
-        Provisional non-authenticated state for a privileged account without
-        an enrolled factor. Enrollment route, protocol, and representation
-        remain pending; no access is granted in this state.
+        Pre-authentication state for a privileged account with no enrolled
+        WebAuthn credential. No application session is created until enrollment
+        has been verified.
       type: object
       additionalProperties: false
-      required: [status]
+      required: [status, challengeId, methods]
       properties:
         status:
           type: string
           const: second_factor_enrollment_required
-    MfaVerificationRequest:
-      description: Provisional request; route and proof schema are pending review.
+        challengeId:
+          type: string
+          description: Opaque, short-lived enrollment reference; not an access token.
+        methods:
+          type: array
+          items:
+            type: string
+            const: webauthn
+    PreAuthChallengeRequest:
       type: object
       additionalProperties: false
-      required: [challengeId, method, proof]
+      required: [challengeId]
       properties:
         challengeId:
           type: string
-        method:
+    WebAuthnOptions:
+      description: >-
+        WebAuthn PublicKeyCredentialCreationOptions or
+        PublicKeyCredentialRequestOptions. Exact fields depend on ceremony and
+        library serialization; challenge, RP ID, origin, and user-verification
+        requirements are validated server-side.
+      type: object
+      additionalProperties: true
+    WebAuthnVerificationRequest:
+      description: >-
+        WebAuthn registration or assertion response plus the opaque pre-auth
+        challenge reference. The server validates challenge, origin, RP ID,
+        user verification, credential signature, and replay state.
+      type: object
+      additionalProperties: false
+      required: [challengeId, credential]
+      properties:
+        challengeId:
           type: string
-          enum: [passkey_windows_hello, security_key, recovery_code]
-        proof:
+        credential:
           type: object
           additionalProperties: true
-          description: Opaque factor proof; exact representation is not specified.
+    MfaEnrollmentComplete:
+      description: >-
+        Returned once after successful first-factor enrollment. Recovery codes
+        are displayed a single time; only their hashes are stored server-side.
+      type: object
+      required: [status, recoveryCodes]
+      properties:
+        status:
+          type: string
+          const: authenticated
+        recoveryCodes:
+          type: array
+          minItems: 1
+          items:
+            type: string
