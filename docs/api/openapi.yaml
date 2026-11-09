@@ -463,6 +463,30 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
   /sessions/current/:
+    get:
+      operationId: getCurrentSession
+      summary: Read the current authenticated session state
+      description: >-
+        Returns only the authentication state. A protected operation still
+        requires MFA whenever the account has an active privileged membership.
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Current session is authenticated and has the required MFA assurance.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: authenticated
+        '403':
+          description: No authenticated session or additional MFA is required.
     delete:
       operationId: deleteCurrentSession
       summary: Sign out of the current session
@@ -473,7 +497,7 @@ paths:
       responses:
         '204':
           description: Session invalidated.
-        '401':
+        '403':
           description: No active session.
 
 components:
