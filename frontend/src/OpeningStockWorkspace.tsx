@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { apiGet, apiPost, ApiError } from './api';
 import DailySalesPanel from './DailySalesPanel';
+import PurchaseOrdersPanel from './PurchaseOrdersPanel';
 import ReplenishmentRecommendationsPanel from './ReplenishmentRecommendationsPanel';
 import SupplierCatalogPanel from './SupplierCatalogPanel';
 
@@ -95,6 +96,16 @@ function quantityPattern(unit: Product['baseUnit']): RegExp {
 
 function unitLabel(unit: Product['baseUnit']): string {
   return unit === 'unit' ? 'unidades' : unit;
+}
+
+function displayRole(role: string): string {
+  const labels: Record<string, string> = {
+    administrator: 'Administrador da rede',
+    store_manager: 'Gerente de loja',
+    operator: 'Operador',
+    buyer: 'Comprador/aprovador',
+  };
+  return labels[role] ?? role;
 }
 
 export default function OpeningStockWorkspace({
@@ -472,7 +483,7 @@ export default function OpeningStockWorkspace({
         <div>
           <p className="eyebrow">Rede ativa</p>
           <h3>{organizationName}</h3>
-          <p className="field-hint">Perfil: {role}</p>
+          <p className="field-hint">Perfil: {displayRole(role)}</p>
         </div>
         <div className="workspace-account-actions">
           {canSwitchOrganization && <button className="secondary-button" disabled={accountBusy || busy || dailySalesBusy} onClick={onSwitchOrganization} type="button">Trocar de rede</button>}
@@ -734,6 +745,13 @@ export default function OpeningStockWorkspace({
             enabled={isAdministrator}
             onCategoryCreated={(category) => setCategories((current) => current.some((item) => item.id === category.id) ? current : [...current, category].sort((left, right) => left.name.localeCompare(right.name, 'pt-BR')))}
             products={products}
+            storeId={selectedStoreId}
+            storeName={activeStore?.name ?? 'loja selecionada'}
+          />
+          <PurchaseOrdersPanel
+            enabled={isAdministrator}
+            isAdministrator={isAdministrator}
+            role={role}
             storeId={selectedStoreId}
             storeName={activeStore?.name ?? 'loja selecionada'}
           />
