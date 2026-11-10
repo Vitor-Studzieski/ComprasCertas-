@@ -16,9 +16,11 @@ info:
     WebAuthn and server-side Django sessions; it does not use bearer/JWT tokens.
     Tenant-scoped inventory endpoints use the validated active organization
     from that session. They accept no organizationId authority from the client;
-    the initial inventory endpoints are administrator-only, while the
-    supplier catalog permits administrators and buyers; browser writes
-    require CSRF. A tenant operation is unavailable until an active
+    initial inventory writes and store endpoints are administrator-only;
+    product reads and supplier catalog operations permit administrators and
+    buyers, with buyers limited to network-wide supplier conditions until
+    store access assignments exist. Browser writes require CSRF. A tenant
+    operation is unavailable until an active
     organization is selected when the user has multiple memberships. Before a
     store can record sales or perform stock operations, it must resolve an
     effective IANA time zone and operational-day start from the network or a
@@ -768,9 +770,10 @@ paths:
       operationId: listProducts
       summary: List products in the active organization
       description: >-
-        Administrator-only. The organization is derived from the validated
-        active session. SKU is unique within this organization; no
-        organizationId is supplied by the client.
+        Administrators and buyers may read the network catalog. The
+        organization is derived from the validated active session. SKU is
+        unique within this organization; no organizationId is supplied by the
+        client. Product creation remains administrator-only.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -782,7 +785,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProductList'
         '403':
-          $ref: '#/components/responses/AdministratorRequired'
+          $ref: '#/components/responses/CatalogAccessRequired'
         '404':
           $ref: '#/components/responses/ActiveOrganizationRequired'
     post:
@@ -934,10 +937,12 @@ paths:
       summary: List purchasing conditions for a supplier
       description: >-
         Administrators and buyers only. Conditions are immutable, effective-
-        dated versions. With no storeId, all scopes are returned. With a
-        storeId, shared network conditions and overrides for that store are
-        returned so the client can apply the latest effective version for
-        each scope. Delivery lead time is measured in calendar days.
+        dated versions. With no storeId, administrators receive all scopes;
+        buyers receive only shared network conditions. Supplying storeId is
+        administrator-only until explicit store assignments are implemented.
+        Administrators with a storeId receive shared network conditions and
+        overrides for that store. Delivery lead time is measured in calendar
+        days.
       tags: [Catalog]
       security:
         - SessionCookie: []
@@ -951,7 +956,7 @@ paths:
         - name: storeId
           in: query
           required: false
-          description: When supplied, include shared conditions and this store's overrides.
+          description: Administrator-only; when supplied, include shared conditions and this store's overrides.
           schema:
             type: string
             format: uuid
@@ -973,9 +978,12 @@ paths:
       summary: Add an effective-dated purchasing condition
       description: >-
         Administrators and buyers only. A missing or null storeId creates a
-        shared network condition; a storeId creates an override. Conditions
-        are append-only: effectiveFrom must be later than the latest version
-        for the same supplier, product, and scope. Delivery lead time uses
+        shared network condition; administrators may supply a storeId to
+        create an override. Buyers are limited to shared conditions until
+        explicit store assignments are implemented; supplying storeId as a
+        buyer returns catalog_store_access_required. Conditions are
+        append-only: effectiveFrom must be later than the latest version for
+        the same supplier, product, and scope. Delivery lead time uses
         calendar days. MOQ and purchaseMultiple are expressed in
         purchaseUnitName; baseUnitsPerPurchaseUnit converts that unit into the
         product's stock base unit. Quantities are exact decimal strings, and
@@ -1549,7 +1557,7 @@ components:
             properties:
               code:
                 type: string
-                enum: [catalog_access_required, mfa_required]
+                enum: [catalog_access_required, catalog_store_access_required, mfa_required]
               message:
                 type: string
     SupplierNameConflict:
