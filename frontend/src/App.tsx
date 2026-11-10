@@ -501,7 +501,7 @@ export default function App() {
             onSignOut={signOut}
             onSwitchOrganization={() => setScreen('organization-selection')}
             organizationName={organizations.find((organization) => organization.id === activeOrganizationId)?.name ?? 'Rede ativa'}
-            role={roleLabel(organizations.find((organization) => organization.id === activeOrganizationId)?.role ?? '')}
+            role={organizations.find((organization) => organization.id === activeOrganizationId)?.role ?? ''}
           />
         )}
 

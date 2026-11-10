@@ -7,6 +7,8 @@ type SupplierComparison = {
   supplierName: string;
   availability: string;
   unitCost: string | null;
+  unitCostSource?: string | null;
+  knownMerchandiseCost?: string | null;
   deliveryLeadTimeDays: number;
   purchaseUnitName: string;
   freightStatus: 'known' | 'unknown' | 'not_applicable' | string;
@@ -109,6 +111,12 @@ function freightLabel(status: SupplierComparison['freightStatus']): string {
   return 'Frete desconhecido';
 }
 
+function unitCostSourceLabel(source: string | null | undefined): string {
+  if (source === 'last_confirmed_receipt') return 'último recebimento confirmado nesta loja';
+  if (source === 'supplier_condition') return 'condição comercial do fornecedor';
+  return 'fonte do preço não informada';
+}
+
 function supplierAvailabilityLabel(supplier: SupplierComparison): string {
   return supplier.availability === 'available'
     ? `${supplier.deliveryLeadTimeDays} dias`
@@ -121,6 +129,7 @@ function reasonLabel(code: string): string {
     stockout_predicted_before_arrival: 'A ruptura está prevista antes da entrega',
     selected_shortest_lead_time_when_all_at_risk: 'Menor prazo entre fornecedores quando todos chegam após a ruptura',
     selected_lowest_known_unit_cost_after_risk: 'Menor preço conhecido entre opções com o mesmo risco de ruptura',
+    selected_lowest_known_merchandise_cost_after_risk: 'Menor subtotal conhecido de mercadoria entre opções com o mesmo risco de ruptura',
     stockout_before_arrival: 'Ruptura prevista antes da chegada',
     partial_cost: 'Frete ausente; custo total parcial',
     low_evidence: 'Baixa evidência de demanda',
@@ -160,6 +169,7 @@ function parameterSourceLabel(source: string): string {
     organization: 'padrão da rede',
     network: 'padrão da rede',
     mixed: 'parâmetros herdados e ajustados',
+    unconfigured: 'sem parâmetros configurados',
   };
   return labels[source] ?? source;
 }
@@ -555,7 +565,7 @@ export default function ReplenishmentRecommendationsPanel({
                         <div className="table-scroll" role="region" aria-label={`Fornecedores comparados para ${item.product.name}`} tabIndex={0}>
                           <table className="balance-table supplier-comparison-table">
                             <thead>
-                              <tr><th scope="col">Fornecedor</th><th scope="col">Prazo</th><th scope="col">Saldo na chegada</th><th scope="col">Falta antes da chegada</th><th scope="col">Preço por unidade de compra</th><th scope="col">Frete / custo total</th><th scope="col">Mínimo / embalagem</th><th scope="col">Quantidade</th><th scope="col">Critério</th></tr>
+                              <tr><th scope="col">Fornecedor</th><th scope="col">Prazo</th><th scope="col">Saldo na chegada</th><th scope="col">Falta antes da chegada</th><th scope="col">Preço / subtotal de mercadoria</th><th scope="col">Frete / custo total</th><th scope="col">Mínimo / embalagem</th><th scope="col">Quantidade</th><th scope="col">Critério</th></tr>
                             </thead>
                             <tbody>
                               {item.supplierComparisons.map((supplier) => (
@@ -564,7 +574,11 @@ export default function ReplenishmentRecommendationsPanel({
                                   <td>{supplierAvailabilityLabel(supplier)}</td>
                                   <td>{supplier.stockAtArrival === null ? 'Sem projeção' : `${displayExactDecimal(supplier.stockAtArrival)} ${unitLabel(item.product.baseUnit)}`}</td>
                                   <td>{displayExactDecimal(supplier.predictedShortageBeforeArrival)} {unitLabel(item.product.baseUnit)}</td>
-                                  <td>{supplier.unitCost === null ? 'Desconhecido' : `R$ ${displayExactDecimal(supplier.unitCost)}`}</td>
+                                  <td>
+                                    {supplier.unitCost === null ? 'Preço unitário desconhecido' : `R$ ${displayExactDecimal(supplier.unitCost)} / ${supplier.purchaseUnitName}`}
+                                    {supplier.unitCost !== null && <span className="supplier-reasons">Fonte: {unitCostSourceLabel(supplier.unitCostSource)}</span>}
+                                    {supplier.knownMerchandiseCost !== null && supplier.knownMerchandiseCost !== undefined && <span className="supplier-reasons">Subtotal: R$ {displayExactDecimal(supplier.knownMerchandiseCost)} · frete não incluído/parcial</span>}
+                                  </td>
                                   <td>{freightLabel(supplier.freightStatus)}{supplier.costCompleteness === 'partial' || supplier.partialCost ? <span className="partial-cost-label"> · total parcial</span> : supplier.costCompleteness === 'unknown' ? <span className="partial-cost-label"> · total desconhecido</span> : null}</td>
                                   <td>{displayExactDecimal(supplier.minimumPurchaseQuantity)} / {displayExactDecimal(supplier.purchaseMultiple)} {supplier.purchaseUnitName}</td>
                                   <td>
