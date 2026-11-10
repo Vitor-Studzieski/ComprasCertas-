@@ -521,6 +521,7 @@ class StockMovement(TenantRecord):
         OPENING = "opening", "Abertura de estoque"
         SALE = "sale", "Venda diária"
         SALE_CORRECTION = "sale_correction", "Correção de venda"
+        RECEIPT = "receipt", "Recebimento de compra"
 
     store = models.ForeignKey(Store, on_delete=models.PROTECT, related_name="stock_movements")
     product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="stock_movements")
@@ -548,6 +549,13 @@ class StockMovement(TenantRecord):
         null=True,
         blank=True,
     )
+    receipt_line = models.ForeignKey(
+        "purchasing.PurchaseReceiptLine",
+        on_delete=models.PROTECT,
+        related_name="stock_movements",
+        null=True,
+        blank=True,
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -571,12 +579,14 @@ class StockMovement(TenantRecord):
                         opening_line__isnull=False,
                         daily_sale__isnull=True,
                         sale_correction__isnull=True,
+                        receipt_line__isnull=True,
                     )
                     | Q(
                         kind="sale",
                         opening_line__isnull=True,
                         daily_sale__isnull=False,
                         sale_correction__isnull=True,
+                        receipt_line__isnull=True,
                         quantity_delta__lte=0,
                     )
                     | (
@@ -585,8 +595,17 @@ class StockMovement(TenantRecord):
                             opening_line__isnull=True,
                             daily_sale__isnull=True,
                             sale_correction__isnull=False,
+                            receipt_line__isnull=True,
                         )
                         & ~Q(quantity_delta=0)
+                    )
+                    | Q(
+                        kind="receipt",
+                        opening_line__isnull=True,
+                        daily_sale__isnull=True,
+                        sale_correction__isnull=True,
+                        receipt_line__isnull=False,
+                        quantity_delta__gte=0,
                     )
                 ),
                 name="inv_movement_reference_valid",
