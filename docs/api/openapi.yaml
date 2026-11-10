@@ -1831,6 +1831,389 @@ paths:
           $ref: '#/components/responses/StoreScopedNotFound'
         '409':
           $ref: '#/components/responses/DailySaleCorrectionConflict'
+
+  /purchase-budgets/:
+    get:
+      operationId: getNetworkPurchaseBudget
+      summary: Read network purchase budget defaults
+      description: Administrator-only. Weekday values use 0 for Monday through 6 for Sunday.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Network limits and week start, or null fields before setup.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkPurchaseBudget'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+    patch:
+      operationId: updateNetworkPurchaseBudget
+      summary: Configure network weekly and monthly purchase limits
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NetworkPurchaseBudgetPatch'
+      responses:
+        '200':
+          description: Saved network budget defaults.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkPurchaseBudget'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+  /stores/{storeId}/purchase-budget/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: getStorePurchaseBudget
+      summary: Read effective purchase limits for a store
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Store overrides and effective inherited limits.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StorePurchaseBudget'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    patch:
+      operationId: updateStorePurchaseBudget
+      summary: Set or clear per-store weekly/monthly overrides
+      description: Null weeklyLimit or monthlyLimit clears only that store override and inherits the network value.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StorePurchaseBudgetPatch'
+      responses:
+        '200':
+          description: Saved store overrides and effective limits.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StorePurchaseBudget'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: Configure network limits before saving store overrides.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseBudgetRequired'
+  /stores/{storeId}/purchase-orders/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: listStorePurchaseOrders
+      summary: List purchase orders for a store
+      description: Administrator-only in this slice; orders remain separate by store.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Orders for the selected store.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    post:
+      operationId: createStorePurchaseOrderDraft
+      summary: Create a draft from current recommendations
+      description: The selected supplier must be the recommended supplier for every item; quantities and conditions are captured by the server.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseOrderDraftCreate'
+      responses:
+        '201':
+          description: Draft and recommendation snapshot created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrder'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: Calendar missing or current recommendations cannot create the requested draft.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OperationalCalendarRequired'
+                  - $ref: '#/components/schemas/PurchaseOrderConflict'
+  /stores/{storeId}/purchase-orders/{orderId}/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    get:
+      operationId: getStorePurchaseOrder
+      summary: Read a purchase order and its snapshot
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Purchase order detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrder'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    patch:
+      operationId: editStorePurchaseOrderDraft
+      summary: Replace items or supplier on a draft
+      description: Only draft orders can change. MOQ and package multiples are enforced; justifications are required for rule exceptions.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseOrderDraftPatch'
+      responses:
+        '200':
+          description: Updated draft with its previous/new values recorded in the event history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrder'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: Order state does not permit editing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderConflict'
+  /stores/{storeId}/purchase-orders/{orderId}/review/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    post:
+      operationId: reviewStorePurchaseOrder
+      summary: Revalidate a draft and mark it reviewed
+      description: Rechecks demand, stock, supplier conditions, and the source snapshot; stale orders cannot be approved.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      responses:
+        '200':
+          description: Reviewed order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrder'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: Source data changed or the order state does not permit review.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/PurchaseOrderStale'
+                  - $ref: '#/components/schemas/PurchaseOrderConflict'
+  /stores/{storeId}/purchase-orders/{orderId}/approve/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    post:
+      operationId: approveStorePurchaseOrder
+      summary: Revalidate and approve a reviewed order
+      description: Online only. Commits estimated value to the store's weekly and monthly budget periods at approval time.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseOrderApproveRequest'
+      responses:
+        '200':
+          description: Approved order with immutable approval snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrder'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: Budget setup/limits, source snapshot, calendar, or order state prevented approval.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/PurchaseBudgetRequired'
+                  - $ref: '#/components/schemas/PurchaseBudgetExceeded'
+                  - $ref: '#/components/schemas/PurchaseOrderStale'
+                  - $ref: '#/components/schemas/PurchaseOrderConflict'
+                  - $ref: '#/components/schemas/OperationalCalendarRequired'
+  /stores/{storeId}/purchase-orders/{orderId}/receipts/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    get:
+      operationId: listStorePurchaseOrderReceipts
+      summary: List partial and total receipts
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Receipts with actual prices and any pending excess quantities.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseReceiptList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    post:
+      operationId: receiveStorePurchaseOrder
+      summary: Record a partial or total physical receipt
+      description: >-
+        Accepted quantities create positive stock movements in the same
+        transaction as receipt/order updates. Quantities above the approved
+        order are recorded as pending excess and do not enter stock or budget.
+        Actual price is per supplier purchase unit; a budget exception reason
+        is required if the revised commitment exceeds either limit.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseReceiptCreate'
+      responses:
+        '201':
+          description: Receipt and stock movements recorded atomically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseReceipt'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: Budget, calendar, order state, or concurrent update prevented receipt.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/PurchaseBudgetRequired'
+                  - $ref: '#/components/schemas/PurchaseBudgetExceeded'
+                  - $ref: '#/components/schemas/PurchaseOrderConflict'
+                  - $ref: '#/components/schemas/OperationalCalendarRequired'
+  /stores/{storeId}/purchase-orders/{orderId}/cancel-remaining/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    post:
+      operationId: cancelStorePurchaseOrderRemaining
+      summary: Cancel the unreceived order balance
+      description: Manager-only in the complete product; this initial API slice checks administrator access until store roles exist.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseOrderCancelRemainingRequest'
+      responses:
+        '200':
+          description: Unreceived quantity canceled; received value remains committed and in stock.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrder'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: Order state does not permit cancellation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderConflict'
+
 components:
   securitySchemes:
     SessionCookie:
@@ -1889,6 +2272,14 @@ components:
       in: path
       required: true
       description: Category UUID; the server verifies it belongs to the active organization.
+      schema:
+        type: string
+        format: uuid
+    PurchaseOrderId:
+      name: orderId
+      in: path
+      required: true
+      description: Purchase-order UUID scoped to the requested store and active organization.
       schema:
         type: string
         format: uuid
@@ -3536,7 +3927,7 @@ components:
     SupplierRecommendationComparison:
       type: object
       additionalProperties: false
-      required: [supplierConditionId, supplierId, supplierName, availability, deliveryLeadTimeDays, unitCost, knownMerchandiseCost, purchaseUnitName, baseUnitsPerPurchaseUnit, minimumPurchaseQuantity, purchaseMultiple, freightStatus, costCompleteness, partialCost, stockAtArrival, predictedShortageBeforeArrival, quantityNeededBase, orderQuantity, orderQuantityBase, excessOverTarget, selected, ruptureAvoidanceRank, costRank, reasonCodes]
+      required: [supplierConditionId, supplierId, supplierName, availability, deliveryLeadTimeDays, unitCost, unitCostSource, knownMerchandiseCost, purchaseUnitName, baseUnitsPerPurchaseUnit, minimumPurchaseQuantity, purchaseMultiple, freightStatus, costCompleteness, partialCost, stockAtArrival, predictedShortageBeforeArrival, quantityNeededBase, orderQuantity, orderQuantityBase, excessOverTarget, selected, ruptureAvoidanceRank, costRank, reasonCodes]
       properties:
         supplierConditionId:
           type: string
@@ -3555,7 +3946,10 @@ components:
         unitCost:
           type: string
           pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
-          description: Price per purchase unit in BRL; no freight is currently stored.
+          description: Price per purchase unit in BRL, using the latest confirmed receipt when it is newer than the current supplier condition; freight is excluded.
+        unitCostSource:
+          type: string
+          enum: [supplier_condition, last_confirmed_receipt]
         knownMerchandiseCost:
           type: [string, 'null']
           pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
@@ -3612,6 +4006,396 @@ components:
           type: array
           items:
             type: string
+    NetworkPurchaseBudget:
+      type: object
+      additionalProperties: false
+      required: [scope, weeklyLimit, monthlyLimit, weekStartsOn]
+      properties:
+        scope:
+          type: string
+          const: network
+        weeklyLimit:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+        monthlyLimit:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+        weekStartsOn:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 6
+          description: 0 is Monday; 6 is Sunday.
+    StorePurchaseBudget:
+      type: object
+      additionalProperties: false
+      required: [scope, storeId, weeklyLimit, monthlyLimit, effectiveWeeklyLimit, effectiveMonthlyLimit, weekStartsOn, inheritsNetwork]
+      properties:
+        scope:
+          type: string
+          const: store
+        storeId:
+          type: string
+          format: uuid
+        weeklyLimit:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+          description: Store override; null inherits the network limit.
+        monthlyLimit:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+          description: Store override; null inherits the network limit.
+        effectiveWeeklyLimit:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+        effectiveMonthlyLimit:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+        weekStartsOn:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 6
+        inheritsNetwork:
+          type: boolean
+    NetworkPurchaseBudgetPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        weeklyLimit:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+        monthlyLimit:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+        weekStartsOn:
+          type: integer
+          minimum: 0
+          maximum: 6
+          description: 0 is Monday; 6 is Sunday. All three fields are required on first setup.
+    StorePurchaseBudgetPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        weeklyLimit:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+        monthlyLimit:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+    PurchaseOrderDraftCreate:
+      type: object
+      additionalProperties: false
+      required: [supplierId, items]
+      properties:
+        supplierId:
+          type: string
+          format: uuid
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [productId]
+            properties:
+              productId:
+                type: string
+                format: uuid
+    PurchaseOrderDraftPatch:
+      type: object
+      additionalProperties: false
+      required: [supplierId, items]
+      properties:
+        supplierId:
+          type: string
+          format: uuid
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [productId, quantity]
+            properties:
+              productId:
+                type: string
+                format: uuid
+              quantity:
+                type: string
+                pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+                description: Quantity in the supplier purchase unit.
+        changeReason:
+          type: string
+          maxLength: 1000
+    PurchaseOrderApproveRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        budgetExceptionReason:
+          type: string
+          maxLength: 1000
+    PurchaseOrderCancelRemainingRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 1000
+    PurchaseOrder:
+      type: object
+      additionalProperties: false
+      required: [id, storeId, supplierId, supplierName, status, sourceAsOfDate, estimatedTotal, committedAmount, freightStatus, costCompleteness, budgetWeekStart, budgetMonthStart, budgetStatus, budgetExceptionReason, stale, createdAt, approvedAt, items]
+      properties:
+        id:
+          type: string
+          format: uuid
+        storeId:
+          type: string
+          format: uuid
+        supplierId:
+          type: string
+          format: uuid
+        supplierName:
+          type: string
+        status:
+          type: string
+          enum: [draft, reviewed, approved, partially_received, received, cancelled, stale]
+        sourceAsOfDate:
+          type: [string, 'null']
+          format: date
+        estimatedTotal:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{2})$'
+          description: Approved/current merchandise estimate in BRL; excludes unknown freight.
+        committedAmount:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{2})$'
+        freightStatus:
+          type: string
+          const: unknown
+        costCompleteness:
+          type: string
+          const: partial
+        budgetWeekStart:
+          type: [string, 'null']
+          format: date
+        budgetMonthStart:
+          type: [string, 'null']
+          format: date
+        budgetStatus:
+          type: string
+          enum: [not_approved, within_limits, exception_approved]
+        budgetExceptionReason:
+          type: string
+        stale:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        approvedAt:
+          type: [string, 'null']
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseOrderItem'
+    PurchaseOrderItem:
+      type: object
+      additionalProperties: false
+      required: [productId, sku, productName, purchaseUnitName, baseUnitsPerPurchaseUnit, recommendedQuantity, quantity, approvedQuantity, receivedQuantity, unitPrice, estimatedLineTotal, minimumPurchaseQuantity, purchaseMultiple, sourceSnapshot]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        productName:
+          type: string
+        purchaseUnitName:
+          type: string
+        baseUnitsPerPurchaseUnit:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        recommendedQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        approvedQuantity:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        receivedQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        unitPrice:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{2})$'
+        estimatedLineTotal:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{2})$'
+        minimumPurchaseQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        purchaseMultiple:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        sourceSnapshot:
+          type: object
+          additionalProperties: true
+    PurchaseOrderList:
+      type: object
+      additionalProperties: false
+      required: [purchaseOrders]
+      properties:
+        purchaseOrders:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseOrder'
+    PurchaseReceiptCreate:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        supplierReference:
+          type: string
+          maxLength: 120
+        budgetExceptionReason:
+          type: string
+          maxLength: 1000
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [productId, physicalQuantity, actualUnitPrice]
+            properties:
+              productId:
+                type: string
+                format: uuid
+              physicalQuantity:
+                type: string
+                pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+                description: Physical quantity in the order's purchase unit.
+              actualUnitPrice:
+                type: string
+                pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+                description: Actual invoice price per purchase unit in BRL.
+    PurchaseReceipt:
+      type: object
+      additionalProperties: false
+      required: [id, receivedAt, operationalDate, supplierReference, budgetExceptionReason, lines]
+      properties:
+        id:
+          type: string
+          format: uuid
+        receivedAt:
+          type: string
+          format: date-time
+        operationalDate:
+          type: string
+          format: date
+        supplierReference:
+          type: string
+        budgetExceptionReason:
+          type: string
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseReceiptLine'
+    PurchaseReceiptLine:
+      type: object
+      additionalProperties: false
+      required: [productId, sku, productName, physicalQuantity, acceptedQuantity, pendingExcessQuantity, actualUnitPrice, lineTotal]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        productName:
+          type: string
+        physicalQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        acceptedQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        pendingExcessQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        actualUnitPrice:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{2})$'
+        lineTotal:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{2})$'
+    PurchaseReceiptList:
+      type: object
+      additionalProperties: false
+      required: [receipts]
+      properties:
+        receipts:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseReceipt'
+    PurchaseBudgetRequired:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: purchase_budget_required
+        message:
+          type: string
+    PurchaseBudgetExceeded:
+      type: object
+      additionalProperties: false
+      required: [code, message, fields]
+      properties:
+        code:
+          type: string
+          const: purchase_budget_exceeded
+        message:
+          type: string
+        fields:
+          type: object
+          additionalProperties: false
+          required: [weeklyLimit, weeklyAfter, monthlyLimit, monthlyAfter]
+          properties:
+            weeklyLimit:
+              type: string
+            weeklyAfter:
+              type: string
+            monthlyLimit:
+              type: string
+            monthlyAfter:
+              type: string
+    PurchaseOrderStale:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: purchase_order_stale
+        message:
+          type: string
+    PurchaseOrderConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: purchase_order_conflict
+        message:
+          type: string
     GenericConflict:
       type: object
       additionalProperties: false
