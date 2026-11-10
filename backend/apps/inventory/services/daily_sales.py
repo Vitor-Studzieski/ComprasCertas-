@@ -38,7 +38,7 @@ class ProductUnavailable(Exception):
 
 
 class ProductNotAssorted(Exception):
-    """Product was not yet part of the store's assortment on the sale date."""
+    """Product has no assortment link that began on or before the sale date."""
 
 
 class OpeningStockRequired(Exception):
@@ -304,15 +304,14 @@ def create_daily_sale(*, request, store_id, product_id, operational_date, quanti
         except Product.DoesNotExist as exc:
             raise ProductUnavailable from exc
 
-        was_assorted = StoreProduct.objects.filter(
+        has_assortment_history = StoreProduct.objects.filter(
             organization_id=organization_id,
             store_id=store.pk,
             product_id=product.pk,
             effective_from__lte=operational_date,
-        ).filter(
-            Q(effective_to__isnull=True) | Q(effective_to__gt=operational_date)
         ).exists()
-        if not was_assorted:
+        # A closed assortment may still have residual stock to liquidate.
+        if not has_assortment_history:
             raise ProductNotAssorted
         _validate_quantity(quantity=quantity, unit=product.unit)
 
