@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from decimal import Decimal, ROUND_CEILING
 
 from django.db.models import Q, Sum
+from django.utils import timezone
 
 from apps.catalog.models import SupplierProductCondition
 from apps.inventory.models import (
@@ -135,7 +136,7 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
             "storeId": str(store.pk),
             "asOfDate": as_of_date.isoformat(),
             "ruleVersion": "deterministic-v1",
-            "generatedAt": None,
+            "generatedAt": timezone.now().isoformat(),
             "reviewIntervalDays": None,
             "window": {"days": 30, "startDate": window_start.isoformat(), "endDate": window_end.isoformat()},
             "limitations": [
@@ -302,19 +303,24 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
                 "order_quantity_base": order_quantity_base,
                 "excess_over_target": excess_over_target,
                 "base_unit_cost": condition.price_per_purchase_unit / condition.base_units_per_purchase_unit,
+                "known_merchandise_cost": (
+                    order_quantity * condition.price_per_purchase_unit
+                    if order_quantity is not None
+                    else None
+                ),
             })
 
         safe_rows = [row for row in supplier_rows if row["predicted_shortage"] == 0]
         at_risk_rows = [row for row in supplier_rows if row["predicted_shortage"] > 0]
         safe_rows.sort(key=lambda row: (
-            row["base_unit_cost"],
+            row["known_merchandise_cost"] if row["known_merchandise_cost"] is not None else Decimal("Infinity"),
             row["condition"].delivery_lead_time_days,
             row["condition"].supplier.name.casefold(),
         ))
         at_risk_rows.sort(key=lambda row: (
             row["condition"].delivery_lead_time_days,
             row["predicted_shortage"],
-            row["base_unit_cost"],
+            row["known_merchandise_cost"] if row["known_merchandise_cost"] is not None else Decimal("Infinity"),
             row["condition"].supplier.name.casefold(),
         ))
         supplier_rows = safe_rows + at_risk_rows if safe_rows else at_risk_rows
@@ -358,15 +364,17 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
                 reason_codes.append(
                     "selected_shortest_lead_time_when_all_at_risk"
                     if not safe_rows
-                    else "selected_lowest_known_unit_cost_after_risk"
+                    else "selected_lowest_known_merchandise_cost_after_risk"
                 )
             reason_codes.append("freight_unknown")
             supplier_comparisons.append({
+                "supplierConditionId": str(condition.pk),
                 "supplierId": str(condition.supplier_id),
                 "supplierName": condition.supplier.name,
                 "availability": "available",
                 "deliveryLeadTimeDays": condition.delivery_lead_time_days,
                 "unitCost": _decimal_text(condition.price_per_purchase_unit),
+                "knownMerchandiseCost": _decimal_text(row["known_merchandise_cost"]),
                 "purchaseUnitName": condition.purchase_unit_name,
                 "baseUnitsPerPurchaseUnit": _decimal_text(condition.base_units_per_purchase_unit),
                 "minimumPurchaseQuantity": _decimal_text(condition.minimum_purchase_quantity),
@@ -431,8 +439,6 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
             "warnings": warnings,
             "supplierComparisons": supplier_comparisons,
         })
-
-    from django.utils import timezone
 
     network_policy = policies.get((None, None, None))
     store_policy = policies.get((None, None, store.pk))
