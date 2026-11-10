@@ -1,7 +1,7 @@
 """Deterministic, explainable replenishment calculations."""
 
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_CEILING
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 from django.db.models import Q, Sum
 from django.utils import timezone
@@ -193,6 +193,29 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
             product_id__in=product_ids,
         ).values("product_id").annotate(total=Sum("quantity_delta"))
     }
+    from apps.purchasing.models import PurchaseReceiptLine
+
+    recent_receipt_lines = list(
+        PurchaseReceiptLine.objects.filter(
+            organization_id=organization_id,
+            receipt__order__store_id=store.pk,
+            receipt__operational_date__lte=as_of_date,
+            accepted_quantity__gt=0,
+            order_item__product_id__in=product_ids,
+        )
+        .select_related("order_item", "receipt__order")
+        .order_by(
+            "order_item__product_id",
+            "receipt__order__supplier_id",
+            "-receipt__operational_date",
+            "-receipt__received_at",
+            "-id",
+        )
+    )
+    recent_receipt_costs = {}
+    for receipt_line in recent_receipt_lines:
+        key = (receipt_line.order_item.product_id, receipt_line.receipt.order.supplier_id)
+        recent_receipt_costs.setdefault(key, receipt_line)
 
     recommendations = []
     for assortment in assortments:
@@ -274,6 +297,19 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
         )
         supplier_rows = []
         for condition in conditions:
+            latest_receipt = recent_receipt_costs.get((product.pk, condition.supplier_id))
+            if latest_receipt is not None and latest_receipt.receipt.operational_date >= condition.effective_from:
+                prior_conversion = latest_receipt.order_item.base_units_per_purchase_unit
+                base_unit_cost = latest_receipt.actual_unit_price / prior_conversion
+                unit_cost = (base_unit_cost * condition.base_units_per_purchase_unit).quantize(
+                    Decimal("0.01"),
+                    rounding=ROUND_HALF_UP,
+                )
+                unit_cost_source = "last_confirmed_receipt"
+            else:
+                unit_cost = condition.price_per_purchase_unit
+                unit_cost_source = "supplier_condition"
+                base_unit_cost = unit_cost / condition.base_units_per_purchase_unit
             lead_days = condition.delivery_lead_time_days
             consumption_to_arrival = (demand or Decimal("0")) * Decimal(lead_days)
             stock_at_arrival = current_stock - consumption_to_arrival
@@ -302,9 +338,11 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
                 "order_quantity": order_quantity,
                 "order_quantity_base": order_quantity_base,
                 "excess_over_target": excess_over_target,
-                "base_unit_cost": condition.price_per_purchase_unit / condition.base_units_per_purchase_unit,
+                "base_unit_cost": base_unit_cost,
+                "unit_cost": unit_cost,
+                "unit_cost_source": unit_cost_source,
                 "known_merchandise_cost": (
-                    order_quantity * condition.price_per_purchase_unit
+                    order_quantity * unit_cost
                     if order_quantity is not None
                     else None
                 ),
@@ -373,7 +411,8 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
                 "supplierName": condition.supplier.name,
                 "availability": "available",
                 "deliveryLeadTimeDays": condition.delivery_lead_time_days,
-                "unitCost": _decimal_text(condition.price_per_purchase_unit),
+                "unitCost": _decimal_text(row["unit_cost"]),
+                "unitCostSource": row["unit_cost_source"],
                 "knownMerchandiseCost": _decimal_text(row["known_merchandise_cost"]),
                 "purchaseUnitName": condition.purchase_unit_name,
                 "baseUnitsPerPurchaseUnit": _decimal_text(condition.base_units_per_purchase_unit),
