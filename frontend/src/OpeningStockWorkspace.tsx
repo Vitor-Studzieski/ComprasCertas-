@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { apiGet, apiPost, ApiError } from './api';
 import DailySalesPanel from './DailySalesPanel';
+import ReplenishmentRecommendationsPanel from './ReplenishmentRecommendationsPanel';
 import SupplierCatalogPanel from './SupplierCatalogPanel';
 
 type CalendarVersion = {
@@ -33,8 +34,11 @@ type Product = {
   sku: string;
   name: string;
   baseUnit: 'unit' | 'kg' | 'l';
+  categoryId: string | null;
+  categoryName: string | null;
   isActive: boolean;
 };
+type ProductCategory = { id: string; name: string; createdAt: string };
 type Assortment = {
   id: string;
   productId: string;
@@ -55,6 +59,7 @@ type WorkspaceData = {
   calendar: { versions: CalendarVersion[] };
   storeList: { stores: Store[] };
   productList: { products: Product[] };
+  categoryList: { categories: ProductCategory[] };
 };
 type Props = {
   organizationName: string;
@@ -68,7 +73,7 @@ type Props = {
 };
 
 const initialCalendarForm = { timeZone: '', operationalDayStart: '', effectiveFrom: '' };
-const initialProductForm = { sku: '', name: '', baseUnit: 'unit' as Product['baseUnit'] };
+const initialProductForm = { sku: '', name: '', baseUnit: 'unit' as Product['baseUnit'], categoryId: '' };
 const initialStoreCalendarForm = { timeZone: '', operationalDayStart: '', effectiveFrom: '' };
 
 function describeError(error: unknown): string {
@@ -105,6 +110,7 @@ export default function OpeningStockWorkspace({
   const [calendarVersions, setCalendarVersions] = useState<CalendarVersion[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<ProductCategory[]>([]);
   const [assortments, setAssortments] = useState<Assortment[]>([]);
   const [storeCalendarVersions, setStoreCalendarVersions] = useState<StoreCalendarVersion[]>([]);
   const [storeDetailsLoading, setStoreDetailsLoading] = useState(false);
@@ -156,12 +162,14 @@ export default function OpeningStockWorkspace({
       apiGet<WorkspaceData['calendar']>('/organizations/current/operational-calendar/'),
       apiGet<WorkspaceData['storeList']>('/stores/'),
       apiGet<WorkspaceData['productList']>('/products/'),
+      apiGet<WorkspaceData['categoryList']>('/product-categories/'),
     ])
-      .then(([calendar, storeList, productList]) => {
+      .then(([calendar, storeList, productList, categoryList]) => {
         if (cancelled) return;
         setCalendarVersions(calendar.versions);
         setStores(storeList.stores);
         setProducts(productList.products);
+        setCategories(categoryList.categories);
         setSelectedStoreId((current) => storeList.stores.some((store) => store.id === current)
           ? current
           : storeList.stores[0]?.id ?? '');
@@ -351,6 +359,7 @@ export default function OpeningStockWorkspace({
         sku: productForm.sku.trim(),
         name: productForm.name.trim(),
         baseUnit: productForm.baseUnit,
+        ...(productForm.categoryId ? { categoryId: productForm.categoryId } : {}),
       });
       setProducts((current) => [...current, created]);
       setProductForm(initialProductForm);
@@ -596,7 +605,7 @@ export default function OpeningStockWorkspace({
             </div>
             <ul className="entity-list product-list" aria-label="Produtos cadastrados">
               {products.map((product) => (
-                <li key={product.id}><strong>{product.name}</strong><span>SKU {product.sku} · {unitLabel(product.baseUnit)}{product.baseUnit !== 'unit' ? ' (até 3 casas decimais)' : ''}</span></li>
+                <li key={product.id}><strong>{product.name}</strong><span>SKU {product.sku} · {unitLabel(product.baseUnit)}{product.baseUnit !== 'unit' ? ' (até 3 casas decimais)' : ''}{product.categoryName ? ` · ${product.categoryName}` : ' · sem categoria'}</span></li>
               ))}
               {products.length === 0 && <li className="empty-state">Nenhum produto cadastrado.</li>}
             </ul>
@@ -610,6 +619,11 @@ export default function OpeningStockWorkspace({
                 <option value="unit">Unidade contável</option>
                 <option value="kg">Quilograma (kg)</option>
                 <option value="l">Litro (l)</option>
+              </select>
+              <label htmlFor="productCategory">Categoria (opcional)</label>
+              <select disabled={busy} id="productCategory" onChange={(event) => setProductForm({ ...productForm, categoryId: event.target.value })} value={productForm.categoryId}>
+                <option value="">Sem categoria</option>
+                {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
               </select>
               <button className="submit-button" disabled={busy} type="submit">{busy ? 'Salvando…' : 'Cadastrar produto'}</button>
             </form>
@@ -711,6 +725,15 @@ export default function OpeningStockWorkspace({
             assortments={assortments}
             onBusyChange={setDailySalesBusy}
             storeDetailsLoading={storeDetailsLoading}
+            storeId={selectedStoreId}
+            storeName={activeStore?.name ?? 'loja selecionada'}
+          />
+          <ReplenishmentRecommendationsPanel
+            assortments={assortments}
+            categories={categories}
+            enabled={isAdministrator}
+            onCategoryCreated={(category) => setCategories((current) => current.some((item) => item.id === category.id) ? current : [...current, category].sort((left, right) => left.name.localeCompare(right.name, 'pt-BR')))}
+            products={products}
             storeId={selectedStoreId}
             storeName={activeStore?.name ?? 'loja selecionada'}
           />
