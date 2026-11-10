@@ -12,6 +12,8 @@ from apps.inventory.views import (
     StoreProductAssortmentCloseView,
     StoreProductAssortmentListCreateView,
     StoreStockBalanceListView,
+    StoreDailyProductSalesView,
+    StoreDailySaleCorrectionsView,
 )
 
 urlpatterns = [
@@ -51,5 +53,15 @@ urlpatterns = [
         "stores/<uuid:store_id>/stock-balances/",
         StoreStockBalanceListView.as_view(),
         name="store-stock-balance-list",
+    ),
+    path(
+        "stores/<uuid:store_id>/daily-sales/",
+        StoreDailyProductSalesView.as_view(),
+        name="store-daily-sales-list-create",
+    ),
+    path(
+        "stores/<uuid:store_id>/daily-sales/<uuid:daily_sale_id>/corrections/",
+        StoreDailySaleCorrectionsView.as_view(),
+        name="store-daily-sales-corrections-list-create",
     ),
 ]
