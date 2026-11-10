@@ -208,6 +208,31 @@ def _organization_and_admin(request):
     return organization_id, None
 
 
+def _organization_and_catalog_reader(request):
+    """Resolve the tenant for read-only catalog access by admins and buyers."""
+    try:
+        organization_id = set_active_organization_rls_context(
+            user=request.user,
+            session=request._request.session,
+        )
+    except ActiveOrganizationRequired:
+        return None, _active_organization_required()
+
+    can_read_catalog = Membership.objects.select_for_update().filter(
+        organization_id=organization_id,
+        user_id=request.user.pk,
+        status=Membership.Status.ACTIVE,
+        role__in=[Membership.Role.ADMINISTRATOR, Membership.Role.BUYER],
+    ).exists()
+    if not can_read_catalog:
+        return None, _problem(
+            "catalog_access_required",
+            "Esta operação exige o papel de administrador ou comprador da rede.",
+            HTTP_403_FORBIDDEN,
+        )
+    return organization_id, None
+
+
 def _store_for_organization(*, organization_id, store_id, lock=False):
     stores = Store.objects.filter(organization_id=organization_id)
     if lock:
@@ -400,7 +425,7 @@ class StoreListCreateView(InventoryAdministratorAPIView):
 class ProductListCreateView(InventoryAdministratorAPIView):
     def get(self, request):
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_catalog_reader(request)
             if error:
                 return error
             products = Product.objects.filter(organization_id=organization_id).order_by("sku", "id")
