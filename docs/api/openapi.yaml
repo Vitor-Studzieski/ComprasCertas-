@@ -27,9 +27,12 @@ info:
     store override; no implicit start-time default is used. Missing calendar
     configuration blocks the operation with 409 operational_calendar_required.
     After calendar setup, an administrator may record the store's initial
-    physical stock count as audited opening movements. This initial slice
-    exposes only SKU, name, and base unit for products; category and barcode
-    are deferred to catalog enrichment before recommendation endpoints ship.
+    physical stock count as audited opening movements. Products can be linked
+    to network-owned categories. Deterministic replenishment uses the previous
+    30 complete operational dates, excludes explicitly recorded out-of-stock
+    dates, and marks incomplete evidence. Expected deliveries, budgets, and
+    freight values are not represented in this increment; recommendations
+    disclose those limitations.
 servers:
   - url: /api/v1
     description: Versioned API base path
@@ -795,8 +798,8 @@ paths:
         Administrator-only. The organization is derived from the validated
         active session. SKU must be unique within that organization. Base-unit
         quantities are exact decimals: unit is countable in whole numbers, kg
-        and l accept up to three decimal places. This initial catalog slice
-        omits category and barcode; add those fields before recommendations.
+        and l accept up to three decimal places. categoryId is optional and
+        must identify a category in the active organization.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -822,6 +825,458 @@ paths:
           $ref: '#/components/responses/ActiveOrganizationRequired'
         '409':
           $ref: '#/components/responses/ProductSkuConflict'
+  /product-categories/:
+    get:
+      operationId: listProductCategories
+      summary: List product categories in the active organization
+      description: >-
+        Administrators and buyers may read the tenant-scoped category catalog.
+        Category names and identifiers are isolated by the active organization.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Categories in the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductCategoryList'
+        '403':
+          $ref: '#/components/responses/CatalogAccessRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+    post:
+      operationId: createProductCategory
+      summary: Create a product category
+      description: Administrator-only; the name is unique within the active organization.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductCategoryCreateRequest'
+      responses:
+        '201':
+          description: New category created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductCategory'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+        '409':
+          description: Category name already exists in the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericConflict'
+  /replenishment-settings/:
+    get:
+      operationId: getNetworkReplenishmentSettings
+      summary: Read network-default replenishment settings
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Network-level defaults; null values are not configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplenishmentPolicy'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+    patch:
+      operationId: updateNetworkReplenishmentSettings
+      summary: Set or clear network-default replenishment settings
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplenishmentPolicyPatch'
+      responses:
+        '200':
+          description: Updated network defaults.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplenishmentPolicy'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+        '409':
+          description: Concurrent policy creation could not be reconciled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericConflict'
+  /product-categories/{categoryId}/replenishment-settings/:
+    parameters:
+      - $ref: '#/components/parameters/ProductCategoryId'
+    get:
+      operationId: getCategoryReplenishmentSettings
+      summary: Read category replenishment settings
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Category defaults for minimum stock and safety days.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplenishmentPolicy'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    patch:
+      operationId: updateCategoryReplenishmentSettings
+      summary: Set or clear category replenishment settings
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplenishmentPolicyPatch'
+      responses:
+        '200':
+          description: Updated category settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplenishmentPolicy'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+  /products/{productId}/replenishment-settings/:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      operationId: getProductReplenishmentSettings
+      summary: Read product-specific replenishment settings
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Product defaults for minimum stock and safety days.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplenishmentPolicy'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    patch:
+      operationId: updateProductReplenishmentSettings
+      summary: Set or clear product-specific replenishment settings
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplenishmentPolicyPatch'
+      responses:
+        '200':
+          description: Updated product settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplenishmentPolicy'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+  /stores/{storeId}/replenishment-settings/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: getStoreReplenishmentSettings
+      summary: Read store-level replenishment settings
+      description: Store scope supports a review interval override only.
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Store-level settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplenishmentPolicy'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    patch:
+      operationId: updateStoreReplenishmentSettings
+      summary: Set or clear a store-level review interval
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplenishmentPolicyPatch'
+      responses:
+        '200':
+          description: Updated store settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplenishmentPolicy'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+  /stores/{storeId}/products/{productId}/replenishment-settings/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      operationId: getStoreProductReplenishmentSettings
+      summary: Read store-product replenishment overrides
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Most-specific minimum-stock and safety-day overrides.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplenishmentPolicy'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    patch:
+      operationId: updateStoreProductReplenishmentSettings
+      summary: Set or clear store-product replenishment overrides
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplenishmentPolicyPatch'
+      responses:
+        '200':
+          description: Updated store-product settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplenishmentPolicy'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+  /stores/{storeId}/replenishment-recommendations/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: getStoreReplenishmentRecommendations
+      summary: Calculate explainable purchase recommendations for a store
+      description: >-
+        The backend derives the active organization and current store-local
+        operational date. It evaluates active product assortments using the
+        previous 30 complete operational dates, excluding only explicitly
+        recorded out-of-stock dates. A date without a sale row counts as zero
+        only when it falls inside an explicitly declared complete-sales
+        period. Fewer than 30 valid dates are marked low evidence. With no
+        valid dates, no future consumption is estimated and the effective
+        minimum stock is the target; if no minimum is configured, no quantity
+        is suggested. Minimum stock and safety days resolve independently by
+        store-product, product, category, then network; the review interval
+        resolves by store then network. Supplier choice prioritizes avoiding
+        predicted shortage, then compares known merchandise unit cost among
+        suppliers that arrive in time. Freight, budgets, and expected purchase
+        deliveries are not modeled in this increment and are disclosed in the
+        response. Access is temporarily administrator-only until store-scoped
+        assignments are implemented.
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Current deterministic recommendation snapshot for the store.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplenishmentRecommendationList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/OperationalCalendarRequired'
+  /stores/{storeId}/sales-coverage/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: listStoreSalesCoverage
+      summary: List declared complete sales periods for a store
+      description: A product/day without a row counts as zero only for dates in these declared complete periods and while the product assortment was active.
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Complete-sales periods for the store.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalesCoverageList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    post:
+      operationId: declareStoreSalesCoverage
+      summary: Declare a store sales period complete
+      description: Administrator confirms the entire inclusive date range is complete. Future dates are rejected.
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SalesCoverageCreateRequest'
+      responses:
+        '201':
+          description: Coverage declaration recorded with actor and timestamp.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalesCoveragePeriod'
+        '400':
+          description: Invalid range or future operational date.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Problem'
+                  - $ref: '#/components/schemas/GenericConflict'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: The exact complete period was already declared or the store calendar is missing.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/GenericConflict'
+                  - $ref: '#/components/schemas/OperationalCalendarRequired'
+  /stores/{storeId}/out-of-stock-days/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: listStoreOutOfStockDays
+      summary: List explicit out-of-stock dates for a store
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Product/day records explicitly marked out of stock.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutOfStockDayList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    post:
+      operationId: recordStoreOutOfStockDay
+      summary: Mark a product as out of stock on an operational date
+      description: The product must belong to the organization and have an active assortment on the requested date. Future dates are rejected.
+      tags: [Replenishment]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OutOfStockDayCreateRequest'
+      responses:
+        '201':
+          description: Explicit out-of-stock record with actor and timestamp.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutOfStockDay'
+        '400':
+          description: Invalid request or future operational date.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Problem'
+                  - $ref: '#/components/schemas/GenericConflict'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: This product/day was already marked out of stock or the store calendar is missing.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/GenericConflict'
+                  - $ref: '#/components/schemas/OperationalCalendarRequired'
   /suppliers/:
     get:
       operationId: listSuppliers
@@ -1417,6 +1872,22 @@ components:
       in: path
       required: true
       description: Supplier UUID; the server verifies it belongs to the active organization.
+      schema:
+        type: string
+        format: uuid
+    ProductId:
+      name: productId
+      in: path
+      required: true
+      description: Product UUID; the server verifies it belongs to the active organization and, for store routes, is linked to that store.
+      schema:
+        type: string
+        format: uuid
+    ProductCategoryId:
+      name: categoryId
+      in: path
+      required: true
+      description: Category UUID; the server verifies it belongs to the active organization.
       schema:
         type: string
         format: uuid
@@ -2159,10 +2630,14 @@ components:
         baseUnit:
           type: string
           enum: [unit, kg, l]
+        categoryId:
+          type: [string, 'null']
+          format: uuid
+          description: Optional category identifier in the active organization.
     Product:
       type: object
       additionalProperties: false
-      required: [id, sku, name, baseUnit, isActive, createdAt]
+      required: [id, sku, name, baseUnit, isActive, createdAt, categoryId, categoryName]
       properties:
         id:
           type: string
@@ -2174,6 +2649,11 @@ components:
         baseUnit:
           type: string
           enum: [unit, kg, l]
+        categoryId:
+          type: [string, 'null']
+          format: uuid
+        categoryName:
+          type: [string, 'null']
         isActive:
           type: boolean
         createdAt:
@@ -2738,3 +3218,398 @@ components:
           description: Immutable correction history in chronological order.
           items:
             $ref: '#/components/schemas/DailySaleCorrection'
+    ProductCategoryCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+    ProductCategory:
+      type: object
+      additionalProperties: false
+      required: [id, name, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    ProductCategoryList:
+      type: object
+      additionalProperties: false
+      required: [categories]
+      properties:
+        categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductCategory'
+    ReplenishmentPolicyPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        minimumStock:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: Exact nonnegative quantity in the product's base unit; null clears this scope's value.
+        safetyDays:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 365
+          description: Nonnegative safety days; null clears this scope's value.
+        reviewIntervalDays:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 365
+          description: Positive review interval; accepted only at network or store scope; null clears the override.
+    ReplenishmentPolicy:
+      type: object
+      additionalProperties: false
+      required: [scope, minimumStock, safetyDays, reviewIntervalDays]
+      properties:
+        scope:
+          type: string
+          enum: [network, category, product, store, store_product]
+        minimumStock:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        safetyDays:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 365
+        reviewIntervalDays:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 365
+    SalesCoverageCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [operationalDateFrom, operationalDateTo]
+      properties:
+        operationalDateFrom:
+          type: string
+          format: date
+        operationalDateTo:
+          type: string
+          format: date
+          description: Inclusive end date; must be on or after the start and not in the future.
+    SalesCoveragePeriod:
+      type: object
+      additionalProperties: false
+      required: [id, operationalDateFrom, operationalDateTo, createdBy, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        operationalDateFrom:
+          type: string
+          format: date
+        operationalDateTo:
+          type: string
+          format: date
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+    SalesCoverageList:
+      type: object
+      additionalProperties: false
+      required: [coveragePeriods]
+      properties:
+        coveragePeriods:
+          type: array
+          items:
+            $ref: '#/components/schemas/SalesCoveragePeriod'
+    OutOfStockDayCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [productId, operationalDate]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        operationalDate:
+          type: string
+          format: date
+    OutOfStockDay:
+      type: object
+      additionalProperties: false
+      required: [id, productId, operationalDate, createdBy, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        operationalDate:
+          type: string
+          format: date
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+    OutOfStockDayList:
+      type: object
+      additionalProperties: false
+      required: [outOfStockDays]
+      properties:
+        outOfStockDays:
+          type: array
+          items:
+            $ref: '#/components/schemas/OutOfStockDay'
+    ReplenishmentRecommendationList:
+      type: object
+      additionalProperties: false
+      required: [storeId, asOfDate, ruleVersion, generatedAt, reviewIntervalDays, window, limitations, recommendations]
+      properties:
+        storeId:
+          type: string
+          format: uuid
+        asOfDate:
+          type: string
+          format: date
+        ruleVersion:
+          type: string
+          const: deterministic-v1
+        generatedAt:
+          type: [string, 'null']
+          format: date-time
+          description: Null only when the store has no active product assortments.
+        reviewIntervalDays:
+          type: [integer, 'null']
+          minimum: 1
+          description: Effective store interval inherited from network settings if no store override exists.
+        window:
+          type: object
+          additionalProperties: false
+          required: [days, startDate, endDate]
+          properties:
+            days:
+              type: integer
+              const: 30
+            startDate:
+              type: string
+              format: date
+            endDate:
+              type: string
+              format: date
+        limitations:
+          type: array
+          items:
+            type: string
+            enum: [expected_deliveries_not_modeled, budget_not_modeled, freight_not_recorded]
+        recommendations:
+          type: array
+          items:
+            $ref: '#/components/schemas/StoreProductRecommendation'
+    StoreProductRecommendation:
+      type: object
+      additionalProperties: false
+      required: [product, currentStock, averageDailyDemand, validDemandDays, lowEvidence, evidence, coverageDays, stockDeficit, effectiveParameters, targetStock, suggestedQuantity, quantityToOrder, excessOverTarget, selectedSupplierId, reasonCodes, warnings, supplierComparisons]
+      properties:
+        product:
+          type: object
+          additionalProperties: false
+          required: [id, sku, name, baseUnit, categoryId, categoryName]
+          properties:
+            id:
+              type: string
+              format: uuid
+            sku:
+              type: string
+            name:
+              type: string
+            baseUnit:
+              type: string
+              enum: [unit, kg, l]
+            categoryId:
+              type: [string, 'null']
+              format: uuid
+            categoryName:
+              type: [string, 'null']
+        currentStock:
+          type: string
+          pattern: '^-?(0|[1-9][0-9]*)(\.[0-9]+)?$'
+        averageDailyDemand:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+          description: Six-decimal average over valid days; null when no valid demand day exists.
+        validDemandDays:
+          type: integer
+          minimum: 0
+          maximum: 30
+        lowEvidence:
+          type: boolean
+        evidence:
+          type: object
+          additionalProperties: false
+          required: [demandWindowStart, demandWindowEnd, excludedOutOfStockDays, completeSalesDays, explicitSalesDays]
+          properties:
+            demandWindowStart:
+              type: string
+              format: date
+            demandWindowEnd:
+              type: string
+              format: date
+            excludedOutOfStockDays:
+              type: integer
+              minimum: 0
+            completeSalesDays:
+              type: integer
+              minimum: 0
+            explicitSalesDays:
+              type: integer
+              minimum: 0
+        coverageDays:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+        stockDeficit:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+        effectiveParameters:
+          type: object
+          additionalProperties: false
+          required: [minimumStock, minimumStockSource, safetyDays, safetyDaysSource, reviewIntervalDays, reviewIntervalSource, source]
+          properties:
+            minimumStock:
+              type: [string, 'null']
+              pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+            minimumStockSource:
+              type: [string, 'null']
+              enum: [store_product, product, category, network, null]
+            safetyDays:
+              type: [integer, 'null']
+              minimum: 0
+            safetyDaysSource:
+              type: [string, 'null']
+              enum: [store_product, product, category, network, null]
+            reviewIntervalDays:
+              type: [integer, 'null']
+              minimum: 1
+            reviewIntervalSource:
+              type: [string, 'null']
+              enum: [store, network, null]
+            source:
+              type: string
+              enum: [store_product, product, category, network, mixed, unconfigured]
+        targetStock:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+        suggestedQuantity:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+          description: Quantity needed before supplier MOQ or packaging adjustment, based on the selected supplier ETA.
+        quantityToOrder:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+          description: Final quantity in base units after supplier MOQ and package-multiple rules.
+        excessOverTarget:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+        selectedSupplierId:
+          type: [string, 'null']
+          format: uuid
+        reasonCodes:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+        supplierComparisons:
+          type: array
+          items:
+            $ref: '#/components/schemas/SupplierRecommendationComparison'
+    SupplierRecommendationComparison:
+      type: object
+      additionalProperties: false
+      required: [supplierId, supplierName, availability, deliveryLeadTimeDays, unitCost, purchaseUnitName, baseUnitsPerPurchaseUnit, minimumPurchaseQuantity, purchaseMultiple, freightStatus, costCompleteness, partialCost, stockAtArrival, predictedShortageBeforeArrival, quantityNeededBase, orderQuantity, orderQuantityBase, excessOverTarget, selected, ruptureAvoidanceRank, costRank, reasonCodes]
+      properties:
+        supplierId:
+          type: string
+          format: uuid
+        supplierName:
+          type: string
+        availability:
+          type: string
+          const: available
+        deliveryLeadTimeDays:
+          type: integer
+          minimum: 0
+        unitCost:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+          description: Price per purchase unit in BRL; no freight is currently stored.
+        purchaseUnitName:
+          type: string
+        baseUnitsPerPurchaseUnit:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        minimumPurchaseQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        purchaseMultiple:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        freightStatus:
+          type: string
+          const: unknown
+        costCompleteness:
+          type: string
+          const: partial
+        partialCost:
+          type: boolean
+          const: true
+        stockAtArrival:
+          type: [string, 'null']
+          pattern: '^-?(0|[1-9][0-9]*)(\.[0-9]+)?$'
+        predictedShortageBeforeArrival:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+        quantityNeededBase:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+        orderQuantity:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+          description: Quantity in the supplier's purchase unit.
+        orderQuantityBase:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+        excessOverTarget:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+        selected:
+          type: boolean
+        ruptureAvoidanceRank:
+          type: integer
+          minimum: 1
+        costRank:
+          type: [integer, 'null']
+          minimum: 1
+          description: Null because freight is not available for a total-cost ranking.
+        reasonCodes:
+          type: array
+          items:
+            type: string
+    GenericConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
