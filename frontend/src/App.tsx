@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { apiDelete, apiGet, apiPost, apiPut, ApiError, refreshCsrfToken } from './api';
 import { createWebAuthnCredential, getWebAuthnAssertion } from './webauthn';
+import OpeningStockWorkspace from './OpeningStockWorkspace';
 
 type RegistrationForm = {
   organizationName: string;
@@ -40,7 +41,7 @@ function initialScreen(): Screen {
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     const fieldErrors = error.fields ? Object.values(error.fields).flat().join(' ') : '';
-    return fieldErrors || error.message;
+    return `Erro ${error.status}${error.code ? ` (${error.code})` : ''}: ${fieldErrors || error.message}`;
   }
   return error instanceof Error ? error.message : 'Não foi possível concluir a solicitação.';
 }
@@ -336,11 +337,11 @@ export default function App() {
     'recovery-codes': 'Guarde seus códigos',
     'organization-selection': 'Selecione sua rede',
     'no-memberships': 'Nenhuma rede vinculada',
-    authenticated: 'Acesso liberado',
+    authenticated: 'Configuração da operação',
   }[screen];
 
   return (
-    <main className="page-shell">
+    <main className={`page-shell${screen === 'authenticated' ? ' workspace-shell' : ''}`}>
       <section className="intro-panel" aria-labelledby="intro-title">
         <a className="brand" href="/" aria-label="CompraCerta, início">
           <span className="brand-mark" aria-hidden="true">C</span>
@@ -490,16 +491,19 @@ export default function App() {
           </div>
         )}
 
-        {screen === 'authenticated' && (
-          <div className="confirmation-state">
-            <p className="confirmation-copy">Sua sessão está ativa na rede <strong>{organizations.find((organization) => organization.id === activeOrganizationId)?.name}</strong>.</p>
-            <p className="field-hint">Perfil nesta rede: {roleLabel(organizations.find((organization) => organization.id === activeOrganizationId)?.role ?? '')}</p>
-            {organizations.length > 1 && <button className="secondary-button" disabled={busy} onClick={() => setScreen('organization-selection')} type="button">Trocar de rede</button>}
-            <button className="secondary-button" disabled={busy} onClick={signOut} type="button">{busy ? 'Saindo...' : 'Sair da conta'}</button>
-          </div>
+        {screen === 'authenticated' && activeOrganizationId && (
+          <OpeningStockWorkspace
+            accountBusy={busy}
+            canSwitchOrganization={organizations.length > 1}
+            isAdministrator={organizations.find((organization) => organization.id === activeOrganizationId)?.role === 'administrator'}
+            onSignOut={signOut}
+            onSwitchOrganization={() => setScreen('organization-selection')}
+            organizationName={organizations.find((organization) => organization.id === activeOrganizationId)?.name ?? 'Rede ativa'}
+            role={roleLabel(organizations.find((organization) => organization.id === activeOrganizationId)?.role ?? '')}
+          />
         )}
 
-        <p className="legal-copy">Os termos de uso e a política de privacidade serão apresentados antes da conclusão do cadastro.</p>
+        {screen !== 'authenticated' && <p className="legal-copy">Os termos de uso e a política de privacidade serão apresentados antes da conclusão do cadastro.</p>}
       </section>
     </main>
   );
