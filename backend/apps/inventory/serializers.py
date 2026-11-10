@@ -132,11 +132,6 @@ class StoreCalendarOverrideRequestSerializer(StrictInputMixin, serializers.Seria
             raise serializers.ValidationError("Informe um fuso horário IANA válido.")
         return value
 
-    def validate_timeZone(self, value):
-        if value is not None and not is_valid_time_zone(value):
-            raise serializers.ValidationError("Informe um fuso horário IANA válido.")
-        return value
-
 
 class StoreCreateRequestSerializer(StrictInputMixin, serializers.Serializer):
     name = serializers.CharField(min_length=1, max_length=160, trim_whitespace=True)
