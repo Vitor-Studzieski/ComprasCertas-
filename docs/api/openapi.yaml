@@ -599,10 +599,14 @@ paths:
         their audit records are not overwritten or deleted. effectiveFrom is
         inclusive and is an operational date. The organization must provide
         both a time zone and a local operational-day start; no start time is
-        hard-coded. Once sales, stock movements/counts, or purchasing/budget
-        transactions exist, effectiveFrom cannot be on or before the current
-        operational date; a first version may be effective on or before today
-        while no such transaction has used the calendar.
+        hard-coded. The first version may use today or an earlier date only
+        while no sales, stock movements/counts, or purchasing/budget
+        transactions exist; otherwise it must be after the current operational
+        date. Every later version must be later than the newest recorded
+        version and after the current operational date for every store,
+        calculated using the network default and each store's effective
+        calendar. This subsequent-version rule applies even when no stock
+        movements exist.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -660,7 +664,13 @@ paths:
         active session. No organizationId is accepted. calendarOverrides is
         optional; omitted fields inherit the network's corresponding default.
         If supplied, effectiveFrom is inclusive and creates an immutable
-        store-calendar version with audit metadata.
+        store-calendar version with audit metadata. An initial override may
+        use today or an earlier operational date only before sales, stock
+        movements/counts, or purchasing/budget transactions exist for the
+        store; otherwise it must be after the current operational date. Later
+        override versions must follow the last version and the current
+        operational date under the store's effective calendar, even when
+        there are no movements.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -710,7 +720,7 @@ paths:
         '403':
           $ref: '#/components/responses/AdministratorRequired'
         '404':
-          $ref: '#/components/responses/ResourceUnavailable'
+          $ref: '#/components/responses/StoreScopedNotFound'
     post:
       operationId: createStoreOperationalCalendarVersion
       summary: Append a store calendar override version
@@ -720,11 +730,13 @@ paths:
         effective inclusively from the supplied operational date. Each field
         is independent: null or an omitted override inherits the network
         default for that field; send any store-specific value that should
-        continue from this version onward. Once sales, stock movements/counts,
-        or purchasing/budget transactions exist for the store, effectiveFrom
-        cannot be on or before its current operational date; a first override
-        may be effective on or before today while no such transaction has
-        used the store calendar.
+        continue from this version onward. For the first override,
+        effectiveFrom may be today or in the past only while no sales, stock
+        movements/counts, or purchasing/budget transactions exist for the
+        store; otherwise it must be after the current operational date. Every
+        later override must be later than the newest recorded override and
+        after the current operational date calculated using the store's
+        current effective calendar, even when no stock movements exist.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -747,7 +759,7 @@ paths:
         '403':
           $ref: '#/components/responses/AdministratorRequired'
         '404':
-          $ref: '#/components/responses/ResourceUnavailable'
+          $ref: '#/components/responses/StoreScopedNotFound'
         '409':
           $ref: '#/components/responses/OperationalCalendarVersionConflict'
   /products/:
@@ -831,7 +843,7 @@ paths:
         '403':
           $ref: '#/components/responses/AdministratorRequired'
         '404':
-          $ref: '#/components/responses/ResourceUnavailable'
+          $ref: '#/components/responses/StoreScopedNotFound'
     post:
       operationId: createStoreProductAssortment
       summary: Add a product to a store assortment
@@ -863,7 +875,7 @@ paths:
         '403':
           $ref: '#/components/responses/AdministratorRequired'
         '404':
-          $ref: '#/components/responses/ResourceUnavailable'
+          $ref: '#/components/responses/StoreScopedNotFound'
         '409':
           $ref: '#/components/responses/AssortmentConflict'
   /stores/{storeId}/product-assortments/{assortmentId}/:
@@ -901,7 +913,7 @@ paths:
         '403':
           $ref: '#/components/responses/AdministratorRequired'
         '404':
-          $ref: '#/components/responses/ResourceUnavailable'
+          $ref: '#/components/responses/StoreScopedNotFound'
         '409':
           $ref: '#/components/responses/AssortmentConflict'
   /stores/{storeId}/opening-stock-counts/:
@@ -949,7 +961,7 @@ paths:
         '403':
           $ref: '#/components/responses/AdministratorRequired'
         '404':
-          $ref: '#/components/responses/ResourceUnavailable'
+          $ref: '#/components/responses/StoreScopedNotFound'
         '409':
           $ref: '#/components/responses/OpeningStockConflict'
   /stores/{storeId}/stock-balances/:
@@ -978,7 +990,7 @@ paths:
         '403':
           $ref: '#/components/responses/AdministratorRequired'
         '404':
-          $ref: '#/components/responses/ResourceUnavailable'
+          $ref: '#/components/responses/StoreScopedNotFound'
         '409':
           $ref: '#/components/responses/OperationalCalendarRequired'
 components:
@@ -1046,6 +1058,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ResourceUnavailable'
+    StoreScopedNotFound:
+      description: >-
+        A store-scoped operation can return either active_organization_required
+        when no organization is selected or resource_unavailable for a missing
+        or cross-organization store/resource ID. Cross-organization existence
+        is not disclosed.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/ActiveOrganizationRequired'
+              - $ref: '#/components/schemas/ResourceUnavailable'
     OperationalCalendarRequired:
       description: No effective operational calendar can be resolved for this store and date.
       content:
@@ -1054,10 +1078,16 @@ components:
             $ref: '#/components/schemas/OperationalCalendarRequired'
     OperationalCalendarVersionConflict:
       description: >-
-        A calendar version already exists for the requested effectiveFrom date,
-        the requested date is not later than the newest recorded version, or it
-        would reinterpret a past or current operational date used by a sales,
-        stock, purchase, or budget transaction.
+        A calendar version already exists for effectiveFrom, the requested
+        date is not later than the newest recorded version, or the date is not
+        later than the current operational date under the applicable network
+        or store calendar. A first version may be today or earlier only before
+        sales, stock movements/counts, or purchasing/budget transactions
+        exist. Any later version must follow both the latest version and the
+        current operational date, even when no movements exist. For network
+        defaults, the current date is checked for every store using the network
+        default and each store's effective calendar; for store overrides, it
+        is checked using that store's current effective calendar.
       content:
         application/json:
           schema:
@@ -1350,6 +1380,7 @@ components:
           const: operational_calendar_version_conflict
         message:
           type: string
+          description: Generic message for duplicate, non-increasing, or retroactive effectiveFrom dates.
     ProductSkuConflict:
       type: object
       additionalProperties: false
