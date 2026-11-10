@@ -44,6 +44,26 @@ class Store(TenantRecord):
         return self.name
 
 
+class ProductCategory(TenantRecord):
+    """A network-owned product category used by replenishment defaults."""
+
+    name = models.CharField(max_length=120)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        db_table = "inventory_product_category"
+        ordering = ["name", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "name"],
+                name="inv_category_org_name_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
 class Product(TenantRecord):
     class Unit(models.TextChoices):
         UNIT = "unit", "Unidade"
@@ -53,6 +73,13 @@ class Product(TenantRecord):
     sku = models.CharField(max_length=64)
     name = models.CharField(max_length=200)
     unit = models.CharField(max_length=4, choices=Unit.choices)
+    category = models.ForeignKey(
+        ProductCategory,
+        on_delete=models.PROTECT,
+        related_name="products",
+        null=True,
+        blank=True,
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
@@ -153,6 +180,172 @@ class StoreProduct(TenantRecord):
             models.CheckConstraint(
                 condition=Q(effective_to__isnull=True) | Q(effective_to__gt=F("effective_from")),
                 name="inv_assortment_valid_interval",
+            ),
+        ]
+
+
+class ReplenishmentPolicy(TenantRecord):
+    """Optional exact settings at network, category, product, or store scope."""
+
+    category = models.ForeignKey(
+        ProductCategory,
+        on_delete=models.PROTECT,
+        related_name="replenishment_policies",
+        null=True,
+        blank=True,
+    )
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name="replenishment_policies",
+        null=True,
+        blank=True,
+    )
+    store = models.ForeignKey(
+        Store,
+        on_delete=models.PROTECT,
+        related_name="replenishment_policies",
+        null=True,
+        blank=True,
+    )
+    minimum_stock = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
+    safety_days = models.PositiveSmallIntegerField(null=True, blank=True)
+    review_interval_days = models.PositiveSmallIntegerField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="inventory_replenishment_policies_created",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "inventory_replenishment_policy"
+        ordering = ["organization_id", "store_id", "product_id", "category_id", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization"],
+                condition=Q(category__isnull=True, product__isnull=True, store__isnull=True),
+                name="inv_replenishment_network_unique",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "category"],
+                condition=Q(category__isnull=False, product__isnull=True, store__isnull=True),
+                name="inv_replenishment_category_unique",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "product"],
+                condition=Q(product__isnull=False, category__isnull=True, store__isnull=True),
+                name="inv_replenishment_product_unique",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "store"],
+                condition=Q(store__isnull=False, product__isnull=True, category__isnull=True),
+                name="inv_replenishment_store_unique",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "store", "product"],
+                condition=Q(store__isnull=False, product__isnull=False, category__isnull=True),
+                name="inv_replenishment_store_product_unique",
+            ),
+            models.CheckConstraint(
+                condition=Q(minimum_stock__isnull=True) | Q(minimum_stock__gte=0),
+                name="inv_replenishment_min_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=Q(category__isnull=True) | Q(product__isnull=True, store__isnull=True),
+                name="inv_replenishment_category_scope_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(store__isnull=True, product__isnull=True, category__isnull=True)
+                    | Q(
+                        store__isnull=False,
+                        product__isnull=False,
+                        category__isnull=True,
+                        review_interval_days__isnull=True,
+                    )
+                    | Q(
+                        store__isnull=True,
+                        product__isnull=True,
+                        category__isnull=False,
+                        review_interval_days__isnull=True,
+                    )
+                    | Q(
+                        store__isnull=True,
+                        product__isnull=False,
+                        category__isnull=True,
+                        review_interval_days__isnull=True,
+                    )
+                    | Q(
+                        store__isnull=False,
+                        product__isnull=True,
+                        category__isnull=True,
+                        minimum_stock__isnull=True,
+                        safety_days__isnull=True,
+                    )
+                ),
+                name="inv_replenishment_fields_scope_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(review_interval_days__isnull=True) | Q(review_interval_days__gte=1),
+                name="inv_replenishment_review_interval_positive",
+            ),
+            models.CheckConstraint(
+                condition=Q(safety_days__isnull=True) | Q(safety_days__lte=365),
+                name="inv_replenishment_safety_days_max",
+            ),
+        ]
+
+
+class DailySalesCoverage(TenantRecord):
+    """Explicit declaration that sales data is complete for a store/date range."""
+
+    store = models.ForeignKey(Store, on_delete=models.PROTECT, related_name="sales_coverage_periods")
+    operational_date_from = models.DateField()
+    operational_date_to = models.DateField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="inventory_sales_coverage_created",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        db_table = "inventory_daily_sales_coverage"
+        ordering = ["store_id", "operational_date_from", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "store", "operational_date_from", "operational_date_to"],
+                name="inv_sales_coverage_period_unique",
+            ),
+            models.CheckConstraint(
+                condition=Q(operational_date_to__gte=models.F("operational_date_from")),
+                name="inv_sales_coverage_range_valid",
+            ),
+        ]
+
+
+class DailyStockAvailability(TenantRecord):
+    """Explicit record that a product was out of stock on an operational day."""
+
+    store = models.ForeignKey(Store, on_delete=models.PROTECT, related_name="daily_stock_availability")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="daily_stock_availability")
+    operational_date = models.DateField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="inventory_stock_availability_created",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        db_table = "inventory_daily_stock_availability"
+        ordering = ["store_id", "product_id", "operational_date", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "store", "product", "operational_date"],
+                name="inv_stock_availability_day_unique",
             ),
         ]
 

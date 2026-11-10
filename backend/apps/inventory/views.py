@@ -26,6 +26,7 @@ from apps.identity.services.organization_context import (
 from apps.inventory.models import (
     OperationalCalendarDefault,
     Product,
+    ProductCategory,
     Store,
     StoreOperationalCalendarOverride,
     StoreProduct,
@@ -55,6 +56,10 @@ from apps.inventory.serializers import (
     SalesCorrectionListSerializer,
     SalesCorrectionRequestSerializer,
     SalesCorrectionSerializer,
+)
+from apps.inventory.replenishment_serializers import (
+    ProductCategoryCreateRequestSerializer,
+    ProductCategorySerializer,
 )
 from apps.inventory.services.calendar import (
     CalendarVersionConflict,
@@ -428,7 +433,7 @@ class ProductListCreateView(InventoryAdministratorAPIView):
             organization_id, error = _organization_and_catalog_reader(request)
             if error:
                 return error
-            products = Product.objects.filter(organization_id=organization_id).order_by("sku", "id")
+            products = Product.objects.filter(organization_id=organization_id).select_related("category").order_by("sku", "id")
             return Response(ProductListSerializer({"products": products}).data, status=HTTP_200_OK)
 
     def post(self, request):
@@ -441,6 +446,14 @@ class ProductListCreateView(InventoryAdministratorAPIView):
             organization_id, error = _organization_and_admin(request)
             if error:
                 return error
+            category = None
+            if values.get("category_id") is not None:
+                category = ProductCategory.objects.filter(
+                    organization_id=organization_id,
+                    pk=values["category_id"],
+                ).first()
+                if category is None:
+                    return _resource_unavailable()
             try:
                 with transaction.atomic():
                     product = Product.objects.create(
@@ -448,6 +461,7 @@ class ProductListCreateView(InventoryAdministratorAPIView):
                         sku=values["sku"],
                         name=values["name"],
                         unit=values["baseUnit"],
+                        category=category,
                     )
             except IntegrityError:
                 return _problem(
@@ -456,6 +470,43 @@ class ProductListCreateView(InventoryAdministratorAPIView):
                     HTTP_409_CONFLICT,
                 )
             return Response(ProductSerializer(product).data, status=HTTP_201_CREATED)
+
+
+class ProductCategoryListCreateView(InventoryAdministratorAPIView):
+    def get(self, request):
+        with transaction.atomic():
+            organization_id, error = _organization_and_catalog_reader(request)
+            if error:
+                return error
+            categories = ProductCategory.objects.filter(
+                organization_id=organization_id,
+            ).order_by("name", "id")
+            return Response(
+                {"categories": ProductCategorySerializer(categories, many=True).data},
+                status=HTTP_200_OK,
+            )
+
+    def post(self, request):
+        serializer = ProductCategoryCreateRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+        with transaction.atomic():
+            organization_id, error = _organization_and_admin(request)
+            if error:
+                return error
+            try:
+                with transaction.atomic():
+                    category = ProductCategory.objects.create(
+                        organization_id=organization_id,
+                        name=serializer.validated_data["name"],
+                    )
+            except IntegrityError:
+                return _problem(
+                    "product_category_name_conflict",
+                    "Já existe uma categoria com esse nome nesta rede.",
+                    HTTP_409_CONFLICT,
+                )
+            return Response(ProductCategorySerializer(category).data, status=HTTP_201_CREATED)
 
 
 def _assortments_overlap(
