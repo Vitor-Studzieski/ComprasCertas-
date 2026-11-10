@@ -7,6 +7,7 @@ type SupplierComparison = {
   supplierName: string;
   availability: string;
   unitCost: string | null;
+  unitCostSource?: string | null;
   knownMerchandiseCost?: string | null;
   deliveryLeadTimeDays: number;
   purchaseUnitName: string;
@@ -108,6 +109,12 @@ function freightLabel(status: SupplierComparison['freightStatus']): string {
   if (status === 'known') return 'Frete informado';
   if (status === 'not_applicable') return 'Frete não aplicável';
   return 'Frete desconhecido';
+}
+
+function unitCostSourceLabel(source: string | null | undefined): string {
+  if (source === 'last_confirmed_receipt') return 'último recebimento confirmado nesta loja';
+  if (source === 'supplier_condition') return 'condição comercial do fornecedor';
+  return 'fonte do preço não informada';
 }
 
 function supplierAvailabilityLabel(supplier: SupplierComparison): string {
@@ -569,6 +576,7 @@ export default function ReplenishmentRecommendationsPanel({
                                   <td>{displayExactDecimal(supplier.predictedShortageBeforeArrival)} {unitLabel(item.product.baseUnit)}</td>
                                   <td>
                                     {supplier.unitCost === null ? 'Preço unitário desconhecido' : `R$ ${displayExactDecimal(supplier.unitCost)} / ${supplier.purchaseUnitName}`}
+                                    {supplier.unitCost !== null && <span className="supplier-reasons">Fonte: {unitCostSourceLabel(supplier.unitCostSource)}</span>}
                                     {supplier.knownMerchandiseCost !== null && supplier.knownMerchandiseCost !== undefined && <span className="supplier-reasons">Subtotal: R$ {displayExactDecimal(supplier.knownMerchandiseCost)} · frete não incluído/parcial</span>}
                                   </td>
                                   <td>{freightLabel(supplier.freightStatus)}{supplier.costCompleteness === 'partial' || supplier.partialCost ? <span className="partial-cost-label"> · total parcial</span> : supplier.costCompleteness === 'unknown' ? <span className="partial-cost-label"> · total desconhecido</span> : null}</td>
