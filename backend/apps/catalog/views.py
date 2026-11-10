@@ -81,6 +81,14 @@ def _catalog_access_required():
     )
 
 
+def _catalog_store_scope_required():
+    return _problem(
+        "catalog_store_access_required",
+        "Condições específicas por loja exigem acesso de administrador nesta etapa.",
+        HTTP_403_FORBIDDEN,
+    )
+
+
 def _supplier_name_conflict():
     return _problem(
         "supplier_name_conflict",
@@ -129,6 +137,14 @@ def _organization_and_catalog_access(request):
     if not allowed:
         return None, _catalog_access_required()
     return organization_id, None
+
+
+def _catalog_membership_role(request, organization_id):
+    return Membership.objects.filter(
+        organization_id=organization_id,
+        user_id=request.user.pk,
+        status=Membership.Status.ACTIVE,
+    ).values_list("role", flat=True).get()
 
 
 @method_decorator(csrf_protect, name="dispatch")
@@ -236,14 +252,18 @@ class SupplierProductConditionsView(CatalogAPIView):
 
         try:
             with transaction.atomic():
-                _, error = _organization_and_catalog_access(request)
+                organization_id, error = _organization_and_catalog_access(request)
                 if error:
                     return error
+                role = _catalog_membership_role(request, organization_id)
+                if role == Membership.Role.BUYER and query_serializer.validated_data.get("store_id") is not None:
+                    return _catalog_store_scope_required()
                 supplier, conditions = list_supplier_conditions(
                     request=request,
                     supplier_id=supplier_id,
                     product_id=query_serializer.validated_data.get("product_id"),
                     store_id=query_serializer.validated_data.get("store_id"),
+                    network_only=role == Membership.Role.BUYER,
                 )
         except ActiveOrganizationRequired:
             return _active_organization_required()
@@ -268,9 +288,12 @@ class SupplierProductConditionsView(CatalogAPIView):
 
         try:
             with transaction.atomic():
-                _, error = _organization_and_catalog_access(request)
+                organization_id, error = _organization_and_catalog_access(request)
                 if error:
                     return error
+                role = _catalog_membership_role(request, organization_id)
+                if role == Membership.Role.BUYER and serializer.validated_data.get("store_id") is not None:
+                    return _catalog_store_scope_required()
                 condition = create_supplier_condition(
                     request=request,
                     supplier_id=supplier_id,

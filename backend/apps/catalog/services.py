@@ -116,7 +116,9 @@ def _get_active_store(*, organization_id, store_id, lock=False):
         raise StoreUnavailable from exc
 
 
-def list_supplier_conditions(*, request, supplier_id, product_id=None, store_id=None):
+def list_supplier_conditions(
+    *, request, supplier_id, product_id=None, store_id=None, network_only=False
+):
     with transaction.atomic():
         organization_id = _organization_for_request(request)
         try:
@@ -136,6 +138,8 @@ def list_supplier_conditions(*, request, supplier_id, product_id=None, store_id=
         if store_id is not None:
             store = _get_active_store(organization_id=organization_id, store_id=store_id)
             conditions = conditions.filter(Q(store__isnull=True) | Q(store_id=store.pk))
+        elif network_only:
+            conditions = conditions.filter(store__isnull=True)
 
         return supplier, list(conditions)
 
