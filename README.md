@@ -4,7 +4,9 @@ Plataforma SaaS para pequenas redes de mercados e lojas de conveniência adminis
 
 ## Estado do projeto
 
-A base de desenvolvimento e a identidade online estão em implementação em branches/worktrees separados. O contrato OpenAPI cobre o calendário operacional e o cadastro do estoque de abertura; as frentes atuais implementam configuração de loja, produtos, sortimento e contagem inicial. Ainda não há um fluxo de produto completo pronto para operação; a arquitetura e o processo multiagente estão documentados.
+Atualizado em 10 de novembro de 2026. A base de desenvolvimento e a identidade online avançam em branches/worktrees separados. O PR #2 atualiza o OpenAPI com calendário, respostas 404 e o campo `source`; os PRs #8 (backend) e #9 (frontend) estão em draft e dependem das entregas de identidade.
+
+Nesta fatia, o onboarding de inventário é temporariamente restrito a administradores. Um administrador lança a contagem inicial com auditoria; vendas e operações de estoque ficam bloqueadas até a loja ter `timezone` e `operationalDayStart` efetivos. Nenhum fluxo foi testado e o produto ainda não está operacional.
 
 ## Direção técnica
 
