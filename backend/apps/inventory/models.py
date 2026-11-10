@@ -208,11 +208,126 @@ class OpeningStockLine(TenantRecord):
         ]
 
 
+class DailyProductSale(TenantRecord):
+    """Auditable daily quantity sold for one product in one store."""
+
+    class Source(models.TextChoices):
+        MANUAL = "manual", "Manual"
+        SPREADSHEET = "spreadsheet", "Planilha"
+
+    store = models.ForeignKey(Store, on_delete=models.PROTECT, related_name="daily_sales")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="daily_sales")
+    operational_date = models.DateField()
+    quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    source = models.CharField(max_length=16, choices=Source.choices, default=Source.MANUAL)
+    operation_id = models.UUIDField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="inventory_daily_sales_created",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "inventory_daily_product_sale"
+        ordering = ["-operational_date", "product__sku", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "store", "product", "operational_date"],
+                name="inv_sale_daily_unique",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "operation_id"],
+                name="inv_sale_op_unique",
+            ),
+            models.CheckConstraint(
+                condition=Q(quantity__gte=0),
+                name="inv_sale_qty_nonnegative",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["organization", "store", "operational_date"],
+                name="inv_sale_store_date_idx",
+            ),
+        ]
+
+
+class SalesCorrection(TenantRecord):
+    """Immutable audit record for an explicit change to a daily sales total."""
+
+    sale = models.ForeignKey(
+        DailyProductSale,
+        on_delete=models.PROTECT,
+        related_name="corrections",
+    )
+    previous_quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    new_quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    reason = models.CharField(max_length=500)
+    operation_id = models.UUIDField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="inventory_sales_corrections_created",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        db_table = "inventory_sales_correction"
+        ordering = ["created_at", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "operation_id"],
+                name="inv_sale_correction_op_unique",
+            ),
+            models.CheckConstraint(
+                condition=Q(previous_quantity__gte=0) & Q(new_quantity__gte=0),
+                name="inv_sale_correction_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=~Q(previous_quantity=F("new_quantity")),
+                name="inv_sale_correction_changed",
+            ),
+        ]
+
+
+class InventoryOperation(TenantRecord):
+    """Organization-wide idempotency ledger for client-generated operation IDs."""
+
+    class Type(models.TextChoices):
+        DAILY_SALE = "daily_sale", "Venda diária"
+        SALES_CORRECTION = "sales_correction", "Correção de venda"
+
+    operation_id = models.UUIDField()
+    operation_type = models.CharField(max_length=24, choices=Type.choices)
+    payload_hash = models.CharField(max_length=64)
+    resource_id = models.UUIDField()
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="inventory_operations_created",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        db_table = "inventory_operation"
+        ordering = ["created_at", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "operation_id"],
+                name="inv_operation_org_id_unique",
+            ),
+        ]
+
+
 class StockMovement(TenantRecord):
-    """Append-only stock ledger; this slice creates opening movements only."""
+    """Append-only stock ledger for opening counts, sales, and corrections."""
 
     class Kind(models.TextChoices):
         OPENING = "opening", "Abertura de estoque"
+        SALE = "sale", "Venda diária"
+        SALE_CORRECTION = "sale_correction", "Correção de venda"
 
     store = models.ForeignKey(Store, on_delete=models.PROTECT, related_name="stock_movements")
     product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="stock_movements")
@@ -221,6 +336,20 @@ class StockMovement(TenantRecord):
     quantity_delta = models.DecimalField(max_digits=14, decimal_places=3)
     opening_line = models.OneToOneField(
         OpeningStockLine,
+        on_delete=models.PROTECT,
+        related_name="movement",
+        null=True,
+        blank=True,
+    )
+    daily_sale = models.OneToOneField(
+        DailyProductSale,
+        on_delete=models.PROTECT,
+        related_name="movement",
+        null=True,
+        blank=True,
+    )
+    sale_correction = models.OneToOneField(
+        SalesCorrection,
         on_delete=models.PROTECT,
         related_name="movement",
         null=True,
@@ -238,8 +367,35 @@ class StockMovement(TenantRecord):
         ordering = ["operational_date", "created_at", "id"]
         constraints = [
             models.CheckConstraint(
-                condition=~Q(kind=Kind.OPENING)
+                condition=~Q(kind="opening")
                 | (Q(quantity_delta__gte=0) & Q(opening_line__isnull=False)),
                 name="inv_opening_movement_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        kind="opening",
+                        opening_line__isnull=False,
+                        daily_sale__isnull=True,
+                        sale_correction__isnull=True,
+                    )
+                    | Q(
+                        kind="sale",
+                        opening_line__isnull=True,
+                        daily_sale__isnull=False,
+                        sale_correction__isnull=True,
+                        quantity_delta__lte=0,
+                    )
+                    | (
+                        Q(
+                            kind="sale_correction",
+                            opening_line__isnull=True,
+                            daily_sale__isnull=True,
+                            sale_correction__isnull=False,
+                        )
+                        & ~Q(quantity_delta=0)
+                    )
+                ),
+                name="inv_movement_reference_valid",
             ),
         ]

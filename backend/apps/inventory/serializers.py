@@ -7,10 +7,13 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from apps.inventory.models import (
+    DailyProductSale,
     OpeningStockBatch,
     OpeningStockLine,
     OperationalCalendarDefault,
     Product,
+    SalesCorrection,
+    StockMovement,
     Store,
     StoreOperationalCalendarOverride,
     StoreProduct,
@@ -323,3 +326,137 @@ class StockBalanceListSerializer(serializers.Serializer):
     storeId = serializers.UUIDField()
     asOfOperationalDate = serializers.DateField()
     balances = StockBalanceSerializer(many=True)
+
+
+class DailyProductSaleCreateRequestSerializer(StrictInputMixin, serializers.Serializer):
+    productId = serializers.UUIDField(source="product_id")
+    operationalDate = serializers.DateField(source="operational_date")
+    quantity = ExactQuantityStringField(max_digits=14, decimal_places=3, min_value=0)
+    operationId = serializers.UUIDField(source="operation_id")
+
+
+class DailyProductSaleQuerySerializer(StrictInputMixin, serializers.Serializer):
+    operationalDateFrom = serializers.DateField(source="operational_date_from")
+    operationalDateTo = serializers.DateField(source="operational_date_to")
+
+    def validate(self, attrs):
+        start = attrs.get("operational_date_from")
+        end = attrs.get("operational_date_to")
+        if start and end and start > end:
+            raise serializers.ValidationError(
+                {"operationalDateTo": ["A data final deve ser igual ou posterior à inicial."]}
+            )
+        return attrs
+
+
+class DailyProductSaleSerializer(serializers.ModelSerializer):
+    storeId = serializers.UUIDField(source="store_id")
+    productId = serializers.UUIDField(source="product_id")
+    sku = serializers.CharField(source="product.sku")
+    productName = serializers.CharField(source="product.name")
+    baseUnit = serializers.CharField(source="product.unit")
+    operationalDate = serializers.DateField(source="operational_date")
+    quantity = serializers.DecimalField(max_digits=14, decimal_places=3, coerce_to_string=True)
+    operationId = serializers.UUIDField(source="operation_id")
+    createdBy = serializers.UUIDField(source="created_by_id")
+    createdAt = serializers.DateTimeField(source="created_at")
+    cutoffDate = serializers.DateField(read_only=True)
+    demandEligible = serializers.BooleanField(read_only=True)
+    stockTreatment = serializers.CharField(source="stock_treatment", read_only=True)
+    initialStockMovementId = serializers.UUIDField(
+        source="initial_stock_movement_id",
+        read_only=True,
+        allow_null=True,
+    )
+    correctionCount = serializers.IntegerField(source="correction_count", read_only=True, default=0)
+
+    class Meta:
+        model = DailyProductSale
+        fields = [
+            "id",
+            "storeId",
+            "productId",
+            "sku",
+            "productName",
+            "baseUnit",
+            "operationalDate",
+            "quantity",
+            "cutoffDate",
+            "stockTreatment",
+            "demandEligible",
+            "initialStockMovementId",
+            "operationId",
+            "createdBy",
+            "createdAt",
+            "correctionCount",
+        ]
+
+
+class DailyProductSalesListSerializer(serializers.Serializer):
+    storeId = serializers.UUIDField()
+    operationalDateFrom = serializers.DateField()
+    operationalDateTo = serializers.DateField()
+    sales = DailyProductSaleSerializer(many=True)
+
+
+class SalesCorrectionRequestSerializer(StrictInputMixin, serializers.Serializer):
+    expectedCurrentQuantity = ExactQuantityStringField(
+        source="expected_current_quantity",
+        max_digits=14,
+        decimal_places=3,
+        min_value=0,
+    )
+    newQuantity = ExactQuantityStringField(
+        source="new_quantity",
+        max_digits=14,
+        decimal_places=3,
+        min_value=0,
+    )
+    reason = serializers.CharField(min_length=1, max_length=500, trim_whitespace=True)
+    operationId = serializers.UUIDField(source="operation_id")
+
+    def validate_reason(self, value):
+        if not value:
+            raise serializers.ValidationError("Informe o motivo da correção.")
+        return value
+
+
+class SalesCorrectionSerializer(serializers.ModelSerializer):
+    dailySaleId = serializers.UUIDField(source="sale_id")
+    previousQuantity = serializers.DecimalField(
+        source="previous_quantity", max_digits=14, decimal_places=3, coerce_to_string=True
+    )
+    newQuantity = serializers.DecimalField(
+        source="new_quantity", max_digits=14, decimal_places=3, coerce_to_string=True
+    )
+    operationId = serializers.UUIDField(source="operation_id")
+    correctedBy = serializers.UUIDField(source="created_by_id")
+    correctedAt = serializers.DateTimeField(source="created_at")
+    compensatingMovementId = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SalesCorrection
+        fields = [
+            "id",
+            "dailySaleId",
+            "previousQuantity",
+            "newQuantity",
+            "reason",
+            "operationId",
+            "correctedBy",
+            "correctedAt",
+            "compensatingMovementId",
+        ]
+
+    def get_compensatingMovementId(self, correction):
+        if hasattr(correction, "inventory_movement_id"):
+            return correction.inventory_movement_id
+        try:
+            return correction.movement.id
+        except StockMovement.DoesNotExist:
+            return None
+
+
+class SalesCorrectionListSerializer(serializers.Serializer):
+    dailySaleId = serializers.UUIDField()
+    corrections = SalesCorrectionSerializer(many=True)

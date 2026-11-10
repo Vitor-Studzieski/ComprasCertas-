@@ -1,10 +1,11 @@
-"""Administrator-only operational calendar and opening-stock API."""
+"""Administrator-only store setup, opening-stock, and daily-sales API."""
 
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_protect
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.status import (
     HTTP_200_OK,
@@ -47,6 +48,13 @@ from apps.inventory.serializers import (
     StoreProductAssortmentCreateRequestSerializer,
     StoreProductAssortmentSerializer,
     StoreSerializer,
+    DailyProductSaleCreateRequestSerializer,
+    DailyProductSaleQuerySerializer,
+    DailyProductSaleSerializer,
+    DailyProductSalesListSerializer,
+    SalesCorrectionListSerializer,
+    SalesCorrectionRequestSerializer,
+    SalesCorrectionSerializer,
 )
 from apps.inventory.services.calendar import (
     CalendarVersionConflict,
@@ -63,6 +71,22 @@ from apps.inventory.services.opening_stock import (
     StoreUnavailable,
     confirm_opening_stock,
     get_store_balances,
+)
+from apps.inventory.services.daily_sales import (
+    DailySaleAlreadyRecorded,
+    DailySaleDateInFuture,
+    DailySaleUnavailable,
+    IdempotencyConflict,
+    InvalidDailySale,
+    OpeningStockRequired,
+    ProductNotAssorted as DailySaleProductNotAssorted,
+    ProductUnavailable as DailySaleProductUnavailable,
+    StaleDailySale,
+    StoreUnavailable as DailySaleStoreUnavailable,
+    correct_daily_sale,
+    create_daily_sale,
+    list_daily_sales,
+    list_sales_corrections,
 )
 
 
@@ -125,6 +149,44 @@ def _assortment_conflict():
     )
 
 
+def _opening_stock_required():
+    return _problem(
+        "opening_stock_required",
+        "Registre a contagem inicial para definir a data de corte desta loja.",
+        HTTP_409_CONFLICT,
+    )
+
+
+def _daily_sale_conflict():
+    return _problem(
+        "daily_sale_conflict",
+        "Já existe um total para este produto, loja e data operacional. Use a correção explícita.",
+        HTTP_409_CONFLICT,
+    )
+
+
+def _idempotency_conflict():
+    return _problem(
+        "idempotency_conflict",
+        "O operationId já foi usado com dados diferentes.",
+        HTTP_409_CONFLICT,
+    )
+
+
+def _stale_daily_sale():
+    return _problem(
+        "daily_sale_quantity_conflict",
+        "O total mudou desde a consulta. Atualize os dados e tente a correção novamente.",
+        HTTP_409_CONFLICT,
+    )
+
+
+def _violated_constraint(error):
+    database_error = getattr(error, "__cause__", None)
+    diagnostics = getattr(database_error, "diag", None)
+    return getattr(diagnostics, "constraint_name", None)
+
+
 def _organization_and_admin(request):
     """Resolve the tenant from session and lock its active administrator membership."""
     try:
@@ -160,6 +222,28 @@ def _store_for_organization(*, organization_id, store_id, lock=False):
 class InventoryAdministratorAPIView(APIView):
     # This is an onboarding-slice role policy; future store roles must add scoped access.
     permission_classes = [MfaForPrivilegedUsers]
+
+    def permission_denied(self, request, message=None, code=None):
+        user = getattr(request, "user", None)
+        if (
+            user
+            and user.is_authenticated
+            and str(message) == MfaForPrivilegedUsers.message
+        ):
+            raise PermissionDenied(
+                detail={"code": "mfa_required", "message": str(message)}
+            )
+        return super().permission_denied(request, message=message, code=code)
+
+    def handle_exception(self, exc):
+        response = super().handle_exception(exc)
+        if (
+            isinstance(exc, PermissionDenied)
+            and isinstance(exc.detail, dict)
+            and exc.detail.get("code") == "mfa_required"
+        ):
+            response.data = exc.detail
+        return response
 
 
 class OrganizationOperationalCalendarView(InventoryAdministratorAPIView):
@@ -514,7 +598,7 @@ class OpeningStockCountCreateView(InventoryAdministratorAPIView):
 
         try:
             with transaction.atomic():
-                organization_id, error = _organization_and_admin(request)
+                _, error = _organization_and_admin(request)
                 if error:
                     return error
                 batch, _ = confirm_opening_stock(
@@ -526,6 +610,8 @@ class OpeningStockCountCreateView(InventoryAdministratorAPIView):
                         for line in values["lines"]
                     ],
                 )
+                batch = type(batch).objects.prefetch_related("lines").get(pk=batch.pk)
+                response_data = OpeningStockCountSerializer(batch).data
         except ActiveOrganizationRequired:
             return _active_organization_required()
         except OperationalCalendarMissing:
@@ -557,8 +643,7 @@ class OpeningStockCountCreateView(InventoryAdministratorAPIView):
                 {"closedOperationalDate": ["A data fechada não pode ser futura no calendário da loja."]}
             )
 
-        batch = type(batch).objects.prefetch_related("lines").get(pk=batch.pk)
-        return Response(OpeningStockCountSerializer(batch).data, status=HTTP_201_CREATED)
+        return Response(response_data, status=HTTP_201_CREATED)
 
 
 class StoreStockBalanceListView(InventoryAdministratorAPIView):
@@ -588,3 +673,180 @@ class StoreStockBalanceListView(InventoryAdministratorAPIView):
             "balances": balances,
         }
         return Response(StockBalanceListSerializer(data).data, status=HTTP_200_OK)
+
+
+class StoreDailyProductSalesView(InventoryAdministratorAPIView):
+    """Read and record explicit daily totals for one store."""
+
+    def get(self, request, store_id):
+        serializer = DailyProductSaleQuerySerializer(data=request.query_params)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+
+        try:
+            with transaction.atomic():
+                _, error = _organization_and_admin(request)
+                if error:
+                    return error
+                store, _opening_batch, sales = list_daily_sales(
+                    request=request,
+                    store_id=store_id,
+                    operational_date_from=serializer.validated_data.get("operational_date_from"),
+                    operational_date_to=serializer.validated_data.get("operational_date_to"),
+                )
+        except ActiveOrganizationRequired:
+            return _active_organization_required()
+        except OperationalCalendarMissing:
+            return _calendar_required()
+        except DailySaleStoreUnavailable:
+            return _resource_unavailable()
+
+        return Response(
+            DailyProductSalesListSerializer(
+                {
+                    "storeId": store.pk,
+                    "operationalDateFrom": serializer.validated_data["operational_date_from"],
+                    "operationalDateTo": serializer.validated_data["operational_date_to"],
+                    "sales": sales,
+                }
+            ).data,
+            status=HTTP_200_OK,
+        )
+
+    def post(self, request, store_id):
+        serializer = DailyProductSaleCreateRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+        values = serializer.validated_data
+
+        try:
+            with transaction.atomic():
+                _, error = _organization_and_admin(request)
+                if error:
+                    return error
+                sale, created = create_daily_sale(
+                    request=request,
+                    store_id=store_id,
+                    product_id=values["product_id"],
+                    operational_date=values["operational_date"],
+                    quantity=values["quantity"],
+                    operation_id=values["operation_id"],
+                )
+        except ActiveOrganizationRequired:
+            return _active_organization_required()
+        except OperationalCalendarMissing:
+            return _calendar_required()
+        except OpeningStockRequired:
+            return _opening_stock_required()
+        except DailySaleStoreUnavailable:
+            return _resource_unavailable()
+        except DailySaleProductUnavailable:
+            return _resource_unavailable()
+        except DailySaleProductNotAssorted:
+            return _validation_response(
+                {"productId": ["O produto ainda não fazia parte do sortimento da loja nesta data."]}
+            )
+        except DailySaleAlreadyRecorded:
+            return _daily_sale_conflict()
+        except IdempotencyConflict:
+            return _idempotency_conflict()
+        except DailySaleDateInFuture:
+            return _validation_response(
+                {"operationalDate": ["A data operacional não pode ser futura."]}
+            )
+        except InvalidDailySale:
+            return _validation_response(
+                {"quantity": ["A quantidade precisa respeitar a unidade-base do produto."]}
+            )
+        except IntegrityError as error:
+            constraint = _violated_constraint(error)
+            if constraint == "inv_sale_daily_unique":
+                return _daily_sale_conflict()
+            if constraint in {"inv_sale_op_unique", "inv_operation_org_id_unique"}:
+                return _idempotency_conflict()
+            raise
+
+        return Response(
+            DailyProductSaleSerializer(sale).data,
+            status=HTTP_201_CREATED if created else HTTP_200_OK,
+        )
+
+
+class StoreDailySaleCorrectionsView(InventoryAdministratorAPIView):
+    """Read a sale's correction history and make explicit audited corrections."""
+
+    def get(self, request, store_id, daily_sale_id):
+        try:
+            with transaction.atomic():
+                _, error = _organization_and_admin(request)
+                if error:
+                    return error
+                sale, corrections = list_sales_corrections(
+                    request=request,
+                    store_id=store_id,
+                    sale_id=daily_sale_id,
+                )
+        except ActiveOrganizationRequired:
+            return _active_organization_required()
+        except DailySaleStoreUnavailable:
+            return _resource_unavailable()
+        except DailySaleUnavailable:
+            return _resource_unavailable()
+
+        return Response(
+            SalesCorrectionListSerializer(
+                {"dailySaleId": sale.pk, "corrections": corrections}
+            ).data,
+            status=HTTP_200_OK,
+        )
+
+    def post(self, request, store_id, daily_sale_id):
+        serializer = SalesCorrectionRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+        values = serializer.validated_data
+
+        try:
+            with transaction.atomic():
+                _, error = _organization_and_admin(request)
+                if error:
+                    return error
+                correction, created = correct_daily_sale(
+                    request=request,
+                    store_id=store_id,
+                    sale_id=daily_sale_id,
+                    expected_current_quantity=values["expected_current_quantity"],
+                    new_quantity=values["new_quantity"],
+                    reason=values["reason"],
+                    operation_id=values["operation_id"],
+                )
+        except ActiveOrganizationRequired:
+            return _active_organization_required()
+        except OperationalCalendarMissing:
+            return _calendar_required()
+        except OpeningStockRequired:
+            return _opening_stock_required()
+        except DailySaleStoreUnavailable:
+            return _resource_unavailable()
+        except DailySaleUnavailable:
+            return _resource_unavailable()
+        except StaleDailySale:
+            return _stale_daily_sale()
+        except IdempotencyConflict:
+            return _idempotency_conflict()
+        except InvalidDailySale:
+            return _validation_response(
+                {"newQuantity": ["A nova quantidade deve ser diferente e respeitar a unidade-base."]}
+            )
+        except IntegrityError as error:
+            if _violated_constraint(error) in {
+                "inv_sale_correction_op_unique",
+                "inv_operation_org_id_unique",
+            }:
+                return _idempotency_conflict()
+            raise
+
+        return Response(
+            SalesCorrectionSerializer(correction).data,
+            status=HTTP_201_CREATED if created else HTTP_200_OK,
+        )
