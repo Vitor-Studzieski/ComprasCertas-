@@ -149,6 +149,31 @@ h1 { max-width: 480px; margin: 0 0 20px; font-size: clamp(36px, 4.4vw, 54px); fo
 .balance-table th { color: #526459; background: #f7f9f6; font-size: 11px; font-weight: 700; }
 .balance-table tbody tr:last-child td { border-bottom: 0; }
 .balance-table td:last-child { font-variant-numeric: tabular-nums; text-align: right; }
+.daily-sales-panel { margin-top: 18px; }
+.daily-sales-note { margin: 0 0 15px; padding: 11px 12px; color: #526459; background: #f5f8f3; border: 1px solid #e1e9df; border-radius: 8px; font-size: 12px; line-height: 1.55; }
+.daily-sales-loaded-range { margin: 0 0 8px; }
+.daily-sales-range { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; align-items: end; max-width: 760px; margin-bottom: 18px; }
+.daily-sales-range label { margin-top: 2px; }
+.daily-sales-range input { margin-bottom: 12px !important; }
+.daily-sales-range .secondary-button { grid-column: 1 / -1; width: fit-content; min-width: 210px; margin: 0; padding: 0 16px; }
+.daily-sales-table-scroll { margin: 14px 0 22px; }
+.daily-sales-table { min-width: 900px; }
+.daily-sales-table td:nth-child(5), .daily-sales-table td:nth-child(6) { white-space: normal; min-width: 155px; }
+.daily-sales-table td:last-child { text-align: left; }
+.selected-sale-row { background: #f0f7ec; }
+.daily-sale-form, .daily-correction-form { margin-top: 18px; padding-top: 18px; border-top: 1px solid #e4eae2; }
+.daily-sale-form h4, .daily-correction-form h4 { margin: 0 0 14px; color: #2d4435; font-size: 15px; }
+.daily-sale-form .field-hint, .daily-correction-form .field-hint { margin: 0 0 13px; }
+.workspace-form textarea { width: 100%; min-height: 84px; margin: 0 0 13px; padding: 10px 12px; color: #1c2b25; background: #fff; border: 1px solid #dce3dc; border-radius: 9px; outline: none; resize: vertical; }
+.workspace-form textarea:focus { border-color: #4e8961; box-shadow: 0 0 0 3px rgb(78 137 97 / 14%); }
+.daily-sale-detail { margin-top: 22px; padding: 18px; background: #f7f9f6; border: 1px solid #e4eae2; border-radius: 12px; }
+.daily-sale-detail-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.daily-sale-detail-heading h4 { margin: 0 0 5px; color: #2d4435; font-size: 15px; }
+.daily-sale-detail-heading p { margin: 0; color: #68736b; font-size: 12px; }
+.daily-sale-detail-heading > span { color: #68736b; font-size: 11px; }
+.daily-correction-table-scroll { margin-top: 14px; }
+.daily-correction-table-scroll .balance-table { min-width: 720px; }
+.daily-correction-table-scroll td:nth-child(4) { min-width: 220px; white-space: normal; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
@@ -176,4 +201,8 @@ h1 { max-width: 480px; margin: 0 0 20px; font-size: clamp(36px, 4.4vw, 54px); fo
   .entity-list span, .calendar-version-list span { text-align: left; }
   .count-line { grid-template-columns: 1fr; gap: 8px; }
   .balance-toolbar { align-items: flex-start; flex-direction: column; }
+  .daily-sales-range { grid-template-columns: 1fr; }
+  .daily-sales-range .secondary-button { grid-column: auto; width: 100%; }
+  .daily-sale-detail { padding: 14px; }
+  .daily-sale-detail-heading { flex-direction: column; }
 }

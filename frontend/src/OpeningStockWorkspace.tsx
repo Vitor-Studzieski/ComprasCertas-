@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { apiGet, apiPost, ApiError } from './api';
+import DailySalesPanel from './DailySalesPanel';
 
 type CalendarVersion = {
   id: string;
@@ -123,6 +124,7 @@ export default function OpeningStockWorkspace({
   const [assortmentTo, setAssortmentTo] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [dailySalesBusy, setDailySalesBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [reloadSequence, setReloadSequence] = useState(0);
@@ -461,8 +463,8 @@ export default function OpeningStockWorkspace({
           <p className="field-hint">Perfil: {role}</p>
         </div>
         <div className="workspace-account-actions">
-          {canSwitchOrganization && <button className="secondary-button" disabled={accountBusy || busy} onClick={onSwitchOrganization} type="button">Trocar de rede</button>}
-          <button className="text-button" disabled={accountBusy || busy} onClick={onSignOut} type="button">Sair</button>
+          {canSwitchOrganization && <button className="secondary-button" disabled={accountBusy || busy || dailySalesBusy} onClick={onSwitchOrganization} type="button">Trocar de rede</button>}
+          <button className="text-button" disabled={accountBusy || busy || dailySalesBusy} onClick={onSignOut} type="button">Sair</button>
         </div>
       </header>
 
@@ -526,7 +528,7 @@ export default function OpeningStockWorkspace({
             </ul>
             <div className="workspace-form store-selector-form">
               <label htmlFor="selectedStore">Loja para calendário, sortimento, contagem e saldo</label>
-              <select disabled={busy || stores.length === 0} id="selectedStore" onChange={(event) => { setSelectedStoreId(event.target.value); setClosedOperationalDate(''); setQuantities({}); setSelectedStoreCalendarForm(initialStoreCalendarForm); }} value={selectedStoreId}>
+              <select disabled={busy || dailySalesBusy || stores.length === 0} id="selectedStore" onChange={(event) => { setSelectedStoreId(event.target.value); setClosedOperationalDate(''); setQuantities({}); setSelectedStoreCalendarForm(initialStoreCalendarForm); }} value={selectedStoreId}>
                 {stores.length === 0 && <option value="">Cadastre uma loja</option>}
                 {stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
               </select>
@@ -701,6 +703,14 @@ export default function OpeningStockWorkspace({
               </div>
             ) : <p className="empty-state">Saldo indisponível até configurar um calendário operacional efetivo para a loja.</p>}
           </section>
+
+          <DailySalesPanel
+            assortments={assortments}
+            onBusyChange={setDailySalesBusy}
+            storeDetailsLoading={storeDetailsLoading}
+            storeId={selectedStoreId}
+            storeName={activeStore?.name ?? 'loja selecionada'}
+          />
         </>
       )}
     </div>
