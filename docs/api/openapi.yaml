@@ -1324,13 +1324,22 @@ components:
               - $ref: '#/components/schemas/OpeningStockAlreadyRecorded'
     DailySalesAccessRequired:
       description: >-
-        Access is temporarily administrator-only in this first cycle. The
-        eventual role model grants operators and managers access only to
-        stores assigned to them.
+        The response code is administrator_required when the caller lacks the
+        temporary administrator role, or mfa_required when MFA has not been
+        satisfied. The eventual role model grants operators and managers
+        access only to stores assigned to them, after required MFA.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Problem'
+            type: object
+            additionalProperties: false
+            required: [code, message]
+            properties:
+              code:
+                type: string
+                enum: [administrator_required, mfa_required]
+              message:
+                type: string
     DailySaleWriteConflict:
       description: >-
         A write requires an effective operational calendar and a persisted
