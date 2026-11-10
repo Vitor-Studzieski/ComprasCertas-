@@ -1,0 +1,2740 @@
+openapi: 3.1.0
+info:
+  title: CompraCerta API
+  version: 0.1.0
+  summary: Draft contract for the first online foundation.
+  description: |
+    Draft contract for the first online cycle. Route details, status codes,
+    token lifetime, WebAuthn RP ID/origins, and validation limits remain
+    provisional. Approved product rules: signup collects network name,
+    administrator name/email, and password; email confirmation is required
+    before operating; the 30-day trial starts at confirmation; no CNPJ,
+    address, or payment details are collected at signup. A global user may
+    join another network only through a separate invitation. Administrators
+    and people who approve orders or stock adjustments must complete MFA
+    before an authenticated session is issued. The technical draft uses
+    WebAuthn and server-side Django sessions; it does not use bearer/JWT tokens.
+    Tenant-scoped inventory endpoints use the validated active organization
+    from that session. They accept no organizationId authority from the client;
+    initial inventory writes and store endpoints are administrator-only;
+    product reads and supplier catalog operations permit administrators and
+    buyers, with buyers limited to network-wide supplier conditions until
+    store access assignments exist. Browser writes require CSRF. A tenant
+    operation is unavailable until an active
+    organization is selected when the user has multiple memberships. Before a
+    store can record sales or perform stock operations, it must resolve an
+    effective IANA time zone and operational-day start from the network or a
+    store override; no implicit start-time default is used. Missing calendar
+    configuration blocks the operation with 409 operational_calendar_required.
+    After calendar setup, an administrator may record the store's initial
+    physical stock count as audited opening movements. This initial slice
+    exposes only SKU, name, and base unit for products; category and barcode
+    are deferred to catalog enrichment before recommendation endpoints ship.
+servers:
+  - url: /api/v1
+    description: Versioned API base path
+paths:
+  /health/:
+    get:
+      operationId: getHealth
+      summary: Check API availability (draft)
+      description: Provisional route and response shape; the exact health-check semantics remain to be decided.
+      tags: [System]
+      security: []
+      responses:
+        '200':
+          description: API is available.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+  /registrations/:
+    post:
+      operationId: createRegistration
+      summary: Start a network's self-service registration
+      description: |
+        Creates only a pending registration intent and sends an email
+        confirmation link; it does not create a usable organization or
+        membership. On confirmation, the backend creates the global user,
+        organization, active administrator membership, and 30-day trial in one
+        transaction. The trial starts at the confirmation time and no session
+        is issued by confirmation. The email link expires 24 hours after issue;
+        resending creates another valid link without invalidating earlier links
+        that have not expired. The token is carried in the URL fragment and the
+        client sends it to the confirmation endpoint in the request body. An
+        email that already belongs to a global account cannot self-create
+        another network; additional memberships require an invitation. The
+        response is generic for new and existing accounts to reduce account
+        enumeration. Route and payload details remain provisional.
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationRequest'
+      responses:
+        '202':
+          description: >-
+            Generic response for an eligible registration request. The same
+            response is used when the email already belongs to an account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrationAccepted'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /email-confirmations/:
+    post:
+      operationId: confirmEmail
+      summary: Confirm an administrator's email address
+      description: |
+        Email confirmation is required before operating. Successful
+        confirmation verifies the email and atomically creates the global user,
+        organization, active administrator membership, and 30-day trial. The
+        trial starts at the confirmation timestamp and ends exactly 30 days
+        later. Confirmation does not issue a session; the administrator must
+        sign in and complete MFA enrollment first. The implementation accepts
+        the one-time token from the email link's URL fragment and expires each
+        issued token after 24 hours. Invalid, expired, and already-used tokens
+        receive the same response. A repeated confirmation must not create
+        duplicate organizations or trials.
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  minLength: 1
+                  description: One-time token extracted by the client from the email link fragment.
+      responses:
+        '200':
+          description: >-
+            Email confirmed, organization and administrator membership created,
+            and 30-day trial started. No authenticated session is created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, trialStartsAt, trialEndsAt]
+                properties:
+                  status:
+                    type: string
+                    const: confirmed
+                  trialStartsAt:
+                    type: string
+                    format: date-time
+                  trialEndsAt:
+                    type: string
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '410':
+          description: >-
+            Token is invalid, expired, or already used. The response does not
+            distinguish these states.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /email-confirmations/resend/:
+    post:
+      operationId: resendEmailConfirmation
+      summary: Resend the confirmation email
+      description: |
+        Sends a generic message that does not disclose whether the email is
+        registered, pending, or already confirmed. For an existing account,
+        any additional network membership still requires a separate invitation.
+        Rate-limit values remain provisional. Each resend creates an additional
+        24-hour token; previously issued, unexpired tokens remain usable.
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        '202':
+          description: Request accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: accepted
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /csrf/:
+    get:
+      operationId: getCsrfToken
+      summary: Obtain a CSRF token for browser requests
+      description: >-
+        Provisional bootstrap endpoint. Browser clients call this before
+        registration, email confirmation, login, or other unsafe requests.
+        The response sets Django's CSRF cookie and returns the masked token;
+        browser clients send that token in X-CSRFToken on unsafe requests. The
+        API validates it with Django CSRF protection, including on anonymous
+        login requests. The client includes credentials for same-origin calls.
+      tags: [Security]
+      security: []
+      responses:
+        '200':
+          description: CSRF cookie and token issued.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Django CSRF cookie; not an authentication session.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [csrfToken]
+                properties:
+                  csrfToken:
+                    type: string
+  /sessions/:
+    post:
+      operationId: createSession
+      summary: Sign in with email and password
+      description: |
+        Provisional route and response representation. The email must be
+        confirmed. A global user with any active administrator, store manager,
+        or buyer membership must complete MFA before a session is issued. If no factor
+        is enrolled, return an enrollment-required pre-authentication state;
+        otherwise return an authentication-required pre-authentication state.
+        Neither state is an application session. A session is created only
+        after all required factors pass. A browser with an existing session
+        must sign out before starting a different login. Sessions are
+        server-side Django sessions carried in a Secure, HttpOnly, SameSite
+        cookie. A session without a completed MFA ceremony cannot access
+        protected application operations while the account has any active
+        privileged membership, including after a role change. Unsafe browser
+        requests use an explicit CSRF token. RP ID and allowed origins are
+        deployment configuration.
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+                  writeOnly: true
+      responses:
+        '200':
+          description: >-
+            Password accepted. The response is one of: authenticated (only
+            when MFA is not required), second_factor_required, or
+            second_factor_enrollment_required. A session cookie is set only
+            for the authenticated state; pre-authentication states do not set
+            an application session.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: >-
+                Secure, HttpOnly, SameSite server-side session cookie; present
+                only when the response status is authenticated.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SessionAuthenticated'
+                  - $ref: '#/components/schemas/MfaRequired'
+                  - $ref: '#/components/schemas/MfaEnrollmentRequired'
+        '401':
+          description: Invalid credentials or unconfirmed email; details are generic.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: An authenticated browser must sign out before another login.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /sessions/mfa/enrollment/options/:
+    post:
+      operationId: createMfaEnrollmentOptions
+      summary: Begin WebAuthn enrollment for a privileged account
+      description: >-
+        Uses the short-lived pre-authentication challenge returned by password
+        login. The challenge expires after 10 minutes and allows at most five
+        failed verification attempts. This does not create an application
+        session. User verification is required. RP ID, allowed origins, and
+        timeout are deployment configuration.
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreAuthChallengeRequest'
+      responses:
+        '200':
+          description: WebAuthn credential-creation options.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebAuthnOptions'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: Challenge invalid, expired, or already used.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /sessions/mfa/enrollment/verify/:
+    post:
+      operationId: verifyMfaEnrollment
+      summary: Verify and save a new WebAuthn credential
+      description: >-
+        The server verifies the WebAuthn registration response against the
+        stored challenge, expected origin and RP ID, and required user
+        verification. On success, it stores public credential data, issues
+        the first session, and returns ten recovery codes once. Only password
+        hashes of the recovery codes are stored. Private key material is never
+        sent to or stored by CompraCerta.
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebAuthnVerificationRequest'
+      responses:
+        '200':
+          description: Enrollment verified; session cookie issued and recovery codes shown once.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Secure, HttpOnly, SameSite server-side session cookie.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MfaEnrollmentComplete'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: Challenge or WebAuthn response could not be verified.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /sessions/mfa/authentication/options/:
+    post:
+      operationId: createMfaAuthenticationOptions
+      summary: Begin WebAuthn verification during login
+      description: >-
+        Uses a short-lived, single-use challenge. The challenge expires after
+        10 minutes and allows at most five failed verification attempts.
+        User verification is required for the assertion.
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreAuthChallengeRequest'
+      responses:
+        '200':
+          description: WebAuthn assertion options.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebAuthnOptions'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: Challenge invalid, expired, or already used.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /sessions/mfa/authentication/verify/:
+    post:
+      operationId: verifyMfaAuthentication
+      summary: Verify a WebAuthn assertion and create a session
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebAuthnVerificationRequest'
+      responses:
+        '200':
+          description: MFA verified and server-side session cookie issued.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Secure, HttpOnly, SameSite server-side session cookie.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionAuthenticated'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: Challenge or WebAuthn response could not be verified.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /sessions/mfa/recovery-code/:
+    post:
+      operationId: verifyRecoveryCode
+      summary: Use a one-time recovery code during login
+      description: >-
+        The recovery code is consumed atomically and cannot be reused. The
+        challenge expires after 10 minutes and allows at most five failed
+        verification attempts.
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [challengeId, recoveryCode]
+              properties:
+                challengeId:
+                  type: string
+                  format: uuid
+                recoveryCode:
+                  type: string
+                  writeOnly: true
+      responses:
+        '200':
+          description: Recovery code accepted and server-side session cookie issued.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Secure, HttpOnly, SameSite server-side session cookie.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionAuthenticated'
+        '401':
+          description: Recovery code is invalid, expired, or already used.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /sessions/current/:
+    get:
+      operationId: getCurrentSession
+      summary: Read the current session and its active organizations
+      description: >-
+        Returns the authenticated state, the active organization selected for
+        this session (if any), and the user's active memberships. If the user
+        has one active membership, the server may select it automatically. If
+        there are multiple active memberships and none is selected, status is
+        organization_selection_required and no tenant-scoped API operation is
+        allowed until selection. With no active memberships, organizations is
+        empty and no tenant operation is available. Organization context is
+        not authority: every tenant operation still checks membership, role,
+        and store scope on the server.
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Authenticated session state and active membership context.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentSession'
+        '403':
+          description: No authenticated session or required MFA assurance is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+    delete:
+      operationId: deleteCurrentSession
+      summary: Sign out of the current session
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      responses:
+        '204':
+          description: Session invalidated.
+        '403':
+          description: No active session.
+  /sessions/current/organization/:
+    put:
+      operationId: setCurrentOrganization
+      summary: Select the active organization for this session
+      description: >-
+        Accepts an organization ID only as a selection request. The server
+        must verify that the authenticated user has an active membership in
+        that organization and must save the selection in the server-side
+        session only after that check. The ID does not grant authority; each
+        tenant operation continues to enforce membership, role, MFA, and store
+        scope. If there are multiple active memberships, tenant-scoped API
+        operations remain unavailable until a valid selection is saved. An
+        organization that does not exist, is not an active membership, or is
+        otherwise not selectable receives the same generic response.
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationSelectionRequest'
+      responses:
+        '200':
+          description: Active organization selected for this session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentSession'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          description: No authenticated session or required MFA assurance is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: >-
+            Organization is unavailable or is not an active membership for
+            this user. The response is identical for an unknown organization,
+            a missing membership, or an invalid selection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationUnavailable'
+
+  /organizations/current/operational-calendar/:
+    get:
+      operationId: listOrganizationOperationalCalendarVersions
+      summary: List the network's operational-calendar defaults
+      description: >-
+        Administrator-only. The organization is resolved from the validated
+        active session; this path does not accept an organization ID. Returns
+        all date-effective default versions with their audit actor and server
+        timestamp. If none are configured, versions is empty.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: All operational-calendar default versions for the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationOperationalCalendar'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+  /organizations/current/operational-calendar/versions/:
+    post:
+      operationId: createOrganizationOperationalCalendarVersion
+      summary: Append a network operational-calendar default version
+      description: >-
+        Administrator-only. Resolves the organization from the validated
+        active session. Adds a date-effective version; existing versions and
+        their audit records are not overwritten or deleted. effectiveFrom is
+        inclusive and is an operational date. The organization must provide
+        both a time zone and a local operational-day start; no start time is
+        hard-coded. The first version may use today or an earlier date only
+        while no sales, stock movements/counts, or purchasing/budget
+        transactions exist; otherwise it must be after the current operational
+        date. Every later version must be later than the newest recorded
+        version and after the current operational date for every store,
+        calculated using the network default and each store's effective
+        calendar. This subsequent-version rule applies even when no stock
+        movements exist.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationOperationalCalendarVersionRequest'
+      responses:
+        '201':
+          description: New immutable calendar version recorded with server-side audit metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationOperationalCalendarVersion'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+        '409':
+          $ref: '#/components/responses/OperationalCalendarVersionConflict'
+  /stores/:
+    get:
+      operationId: listStores
+      summary: List stores in the active organization
+      description: >-
+        Administrator-only. The organization is derived from the validated
+        active session. Each store reports its current explicit overrides and
+        the effective calendar resolved field by field from those overrides
+        and the network defaults. effectiveCalendar is null while a required
+        value cannot be resolved.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Stores belonging to the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+    post:
+      operationId: createStore
+      summary: Create a store
+      description: >-
+        Administrator-only. The organization is derived from the validated
+        active session. No organizationId is accepted. calendarOverrides is
+        optional; omitted fields inherit the network's corresponding default.
+        If supplied, effectiveFrom is inclusive and creates an immutable
+        store-calendar version with audit metadata. An initial override may
+        use today or an earlier operational date only before sales, stock
+        movements/counts, or purchasing/budget transactions exist for the
+        store; otherwise it must be after the current operational date. Later
+        override versions must follow the last version and the current
+        operational date under the store's effective calendar, even when
+        there are no movements.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreCreateRequest'
+      responses:
+        '201':
+          description: Store created in the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Store'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+        '409':
+          $ref: '#/components/responses/StoreNameConflict'
+  /stores/{storeId}/operational-calendar/versions/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: listStoreOperationalCalendarVersions
+      summary: List date-effective store calendar overrides
+      description: >-
+        Administrator-only. The server verifies the store belongs to the
+        validated active organization. Returns historical and future override
+        versions with audit metadata; null or omitted fields inherit the
+        network default for that field on the effective operational date.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Store calendar override history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreOperationalCalendar'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    post:
+      operationId: createStoreOperationalCalendarVersion
+      summary: Append a store calendar override version
+      description: >-
+        Administrator-only. The server verifies the store belongs to the
+        validated active organization. Creates an immutable, audited version
+        effective inclusively from the supplied operational date. Each field
+        is independent: null or an omitted override inherits the network
+        default for that field; send any store-specific value that should
+        continue from this version onward. For the first override,
+        effectiveFrom may be today or in the past only while no sales, stock
+        movements/counts, or purchasing/budget transactions exist for the
+        store; otherwise it must be after the current operational date. Every
+        later override must be later than the newest recorded override and
+        after the current operational date calculated using the store's
+        current effective calendar, even when no stock movements exist.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreOperationalCalendarVersionRequest'
+      responses:
+        '201':
+          description: New store override version recorded with audit metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreOperationalCalendarVersion'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/OperationalCalendarVersionConflict'
+  /products/:
+    get:
+      operationId: listProducts
+      summary: List products in the active organization
+      description: >-
+        Administrators and buyers may read the network catalog. The
+        organization is derived from the validated active session. SKU is
+        unique within this organization; no organizationId is supplied by the
+        client. Product creation remains administrator-only.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Products belonging to the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductList'
+        '403':
+          $ref: '#/components/responses/CatalogAccessRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+    post:
+      operationId: createProduct
+      summary: Create a product
+      description: >-
+        Administrator-only. The organization is derived from the validated
+        active session. SKU must be unique within that organization. Base-unit
+        quantities are exact decimals: unit is countable in whole numbers, kg
+        and l accept up to three decimal places. This initial catalog slice
+        omits category and barcode; add those fields before recommendations.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductCreateRequest'
+      responses:
+        '201':
+          description: Product created in the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+        '409':
+          $ref: '#/components/responses/ProductSkuConflict'
+  /suppliers/:
+    get:
+      operationId: listSuppliers
+      summary: List suppliers in the active organization
+      description: >-
+        Administrators and buyers only. The organization is derived from the
+        validated active session. Inactive suppliers are included so that
+        historical purchasing conditions remain accessible.
+      tags: [Catalog]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Suppliers belonging to the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupplierList'
+        '403':
+          $ref: '#/components/responses/CatalogAccessRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+    post:
+      operationId: createSupplier
+      summary: Create a supplier
+      description: >-
+        Administrators and buyers only. The organization is derived from the
+        validated active session. Supplier names are unique case-insensitively
+        within the organization. New suppliers start active.
+      tags: [Catalog]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupplierCreateRequest'
+      responses:
+        '201':
+          description: Supplier created in the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Supplier'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/CatalogAccessRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+        '409':
+          $ref: '#/components/responses/SupplierNameConflict'
+  /suppliers/{supplierId}/:
+    parameters:
+      - $ref: '#/components/parameters/SupplierId'
+    get:
+      operationId: getSupplier
+      summary: Get a supplier
+      description: Administrators and buyers only; cross-organization IDs are not disclosed.
+      tags: [Catalog]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Supplier details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Supplier'
+        '403':
+          $ref: '#/components/responses/CatalogAccessRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    patch:
+      operationId: updateSupplier
+      summary: Update supplier details or active status
+      description: >-
+        Administrators and buyers only. Updates are limited to the supplied
+        fields; supplier-product conditions are immutable and must be changed
+        by adding a later effective-dated version.
+      tags: [Catalog]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupplierUpdateRequest'
+      responses:
+        '200':
+          description: Updated supplier details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Supplier'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/CatalogAccessRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/SupplierNameConflict'
+  /suppliers/{supplierId}/product-conditions/:
+    parameters:
+      - $ref: '#/components/parameters/SupplierId'
+    get:
+      operationId: listSupplierProductConditions
+      summary: List purchasing conditions for a supplier
+      description: >-
+        Administrators and buyers only. Conditions are immutable, effective-
+        dated versions. With no storeId, administrators receive all scopes;
+        buyers receive only shared network conditions. Supplying storeId is
+        administrator-only until explicit store assignments are implemented.
+        Administrators with a storeId receive shared network conditions and
+        overrides for that store. Delivery lead time is measured in calendar
+        days.
+      tags: [Catalog]
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: productId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: storeId
+          in: query
+          required: false
+          description: Administrator-only; when supplied, include shared conditions and this store's overrides.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Purchasing conditions for the supplier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupplierProductConditionList'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/CatalogAccessRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    post:
+      operationId: createSupplierProductCondition
+      summary: Add an effective-dated purchasing condition
+      description: >-
+        Administrators and buyers only. A missing or null storeId creates a
+        shared network condition; administrators may supply a storeId to
+        create an override. Buyers are limited to shared conditions until
+        explicit store assignments are implemented; supplying storeId as a
+        buyer returns catalog_store_access_required. Conditions are
+        append-only: effectiveFrom must be later than the latest version for
+        the same supplier, product, and scope. Delivery lead time uses
+        calendar days. MOQ and purchaseMultiple are expressed in
+        purchaseUnitName; baseUnitsPerPurchaseUnit converts that unit into the
+        product's stock base unit. Quantities are exact decimal strings, and
+        countable products require whole-number conversion and quantities.
+      tags: [Catalog]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupplierProductConditionCreateRequest'
+      responses:
+        '201':
+          description: New purchasing-condition version created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupplierProductCondition'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/CatalogAccessRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/SupplierConditionConflict'
+  /stores/{storeId}/product-assortments/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: listStoreProductAssortments
+      summary: List current and historical store-product links
+      description: >-
+        Administrator-only. Store ownership is checked against the validated
+        active organization. Returns active and historical links so ending a
+        range never removes its audit history. Validity uses the half-open
+        interval [effectiveFrom, effectiveTo): the start is inclusive and the
+        optional end is exclusive.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Store-product assortment links and effective dates.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreProductAssortmentList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    post:
+      operationId: createStoreProductAssortment
+      summary: Add a product to a store assortment
+      description: >-
+        Administrator-only. The store and product must both belong to the
+        validated active organization. Creates an audited date-effective link
+        using [effectiveFrom, effectiveTo), with an optional exclusive end.
+        The active organization is derived from the session, not a client ID.
+        If effectiveTo is supplied, it must be later than effectiveFrom.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreProductAssortmentCreateRequest'
+      responses:
+        '201':
+          description: Assortment link created with audit metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreProductAssortment'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/AssortmentConflict'
+  /stores/{storeId}/product-assortments/{assortmentId}/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/AssortmentId'
+    patch:
+      operationId: closeStoreProductAssortment
+      summary: End a store-product assortment link
+      description: >-
+        Administrator-only. Sets the exclusive effectiveTo date for an
+        open-ended link, retaining the row and its audit history rather than
+        deleting it. effectiveTo must be later than effectiveFrom. The server
+        verifies the store and link belong to the validated active
+        organization and records the acting administrator and server time.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreProductAssortmentCloseRequest'
+      responses:
+        '200':
+          description: Link ended; its historical record is retained.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreProductAssortment'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/AssortmentConflict'
+  /stores/{storeId}/opening-stock-counts/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    post:
+      operationId: createOpeningStockCount
+      summary: Record one atomic opening stock count batch
+      description: >-
+        Administrator-only. Requires an effective operational calendar for
+        both the store's current operational date and closedOperationalDate;
+        a future closedOperationalDate is rejected. The server derives
+        cutoffDate = closedOperationalDate + 1 operational day. Every line
+        must refer to a product in this store's active assortment on
+        closedOperationalDate; a complete batch contains one line for every
+        product active in the assortment, including explicit zero counts.
+        The initial physical count is recorded by an administrator and
+        produces immutable audit metadata identifying actor, server time,
+        store, closed date, each product/quantity, and the opening movement.
+        The server records the origin; this endpoint always records `manual`,
+        while a future validated spreadsheet flow may record `spreadsheet`.
+        All lines are validated and written atomically; on any error no line
+        is committed. Quantities are exact decimal
+        strings: unit products require integers, kg/l products allow at most
+        three fractional places, and values are never rounded.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpeningStockCountRequest'
+      responses:
+        '201':
+          description: Atomic opening count recorded as ledger movements.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpeningStockCount'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/OpeningStockConflict'
+  /stores/{storeId}/stock-balances/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: listCurrentStockBalances
+      summary: Read current stock balances from movements
+      description: >-
+        Administrator-only. Requires an effective operational calendar for
+        the store's current operational date. Balances are calculated by
+        aggregating the store's stock movements; this contract does not
+        introduce a separate materialized projection. Quantities are exact
+        decimals and follow each product's base-unit precision. Store
+        ownership is checked against the validated active organization.
+      tags: [Inventory]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Current ledger-aggregated balances for the store.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockBalanceList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/OperationalCalendarRequired'
+  /stores/{storeId}/daily-sales/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: listDailySales
+      summary: List daily product sales totals
+      description: >-
+        Daily totals are scoped to the validated active organization and this
+        store. operationalDate is a store-local business date determined by
+        the effective time zone and operational-day start; the query dates
+        are already operational dates and do not include a client timezone.
+        The role model is store-scoped: an operator or manager assigned to the
+        store may read these records. This PR temporarily permits only
+        administrators until store-role onboarding is available. Reads may be
+        used before an opening count and return an empty list when no sales
+        exist. Product dates before the opening cutoff are demand-only while
+        within the demand-eligible assortment period; records at/after it may
+        have created stock movements. Sales after an assortment end may be
+        retained for liquidation but are not demand inputs.
+      tags: [Sales]
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: operationalDateFrom
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: operationalDateTo
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Daily totals for the inclusive store-local operational-date range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailySaleList'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/DailySalesAccessRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/OperationalCalendarRequired'
+    post:
+      operationId: createDailySale
+      summary: Record a manual daily sales total
+      description: >-
+        The organization is derived from the validated active session and the
+        store is validated within it; no organizationId is accepted. The
+        effective store calendar must resolve for operationalDate. An opening
+        stock count must have established the store cutoff before a sale can
+        be written. For operationalDate before cutoffDate, the total affects
+        demand only and creates no movement. On or after cutoffDate, the total
+        and one outbound stock movement are committed atomically. Products
+        must belong to this organization and have a store-product link whose
+        effectiveFrom is on or before operationalDate. After the link's
+        exclusive effectiveTo, explicit sales may still be recorded to
+        liquidate residual stock but are not demand-eligible or recommendation
+        inputs.
+
+        Authorization target: an operator or manager assigned to this store.
+        This PR temporarily gates writes to administrators until store-role
+        onboarding is available; the eventual role check must remain
+        store-scoped. Browser writes require CSRF.
+
+        operationId is a client-generated UUID idempotency key. Repeating the
+        same operationId with the same canonical payload returns the existing
+        sale; reusing it with a different payload returns 409. The unique
+        business key is organization + store + SKU + operationalDate; a
+        different operationId for an existing key also returns 409.
+      tags: [Sales]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DailySaleCreateRequest'
+      responses:
+        '201':
+          description: New daily total recorded; if at/after cutoff, the outbound movement committed atomically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailySale'
+        '200':
+          description: Idempotent replay; returns the existing sale resource without duplicating its movement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailySale'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/DailySalesAccessRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/DailySaleWriteConflict'
+  /stores/{storeId}/daily-sales/{dailySaleId}/corrections/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/DailySaleId'
+    get:
+      operationId: listDailySaleCorrections
+      summary: List the audit history of a daily sales total
+      description: >-
+        Returns every explicit correction in chronological order, preserving
+        the previous and new totals, actor, reason, server timestamp, and any
+        compensating movement. Authorization follows the store-scoped role
+        model; this PR temporarily permits only administrators until
+        store-role onboarding is available.
+      tags: [Sales]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Correction audit history for the daily sale.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailySaleCorrectionList'
+        '403':
+          $ref: '#/components/responses/DailySalesAccessRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    post:
+      operationId: correctDailySale
+      summary: Explicitly correct a daily sales total
+      description: >-
+        Replaces the current daily total and appends an immutable correction
+        audit record; it does not create a second daily-sale row. The request
+        must include expectedCurrentQuantity from the screen's latest read.
+        After idempotent replay lookup, the backend locks the sale and rejects
+        a correction if its current quantity no longer matches that expected
+        value. The actor and server time are derived and recorded by the
+        backend, while reason is required in the request. The effective store
+        calendar and an existing opening cutoff are required. If
+        operationalDate is before cutoffDate, the correction changes demand
+        data only. On/after cutoffDate, the correction and a compensating
+        stock movement for the difference only are committed in the same
+        transaction. Retrying the same operationId with the same payload
+        returns the existing correction; reusing that ID with a different
+        payload returns 409. Authorization target is a store-assigned
+        operator or manager; this PR temporarily gates writes to
+        administrators until store-role onboarding is available. Browser
+        writes require CSRF.
+      tags: [Sales]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DailySaleCorrectionRequest'
+      responses:
+        '201':
+          description: Correction recorded with old/new values and audit metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailySaleCorrection'
+        '200':
+          description: Idempotent replay; returns the existing correction without duplicating its movement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailySaleCorrection'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/DailySalesAccessRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/DailySaleCorrectionConflict'
+components:
+  securitySchemes:
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: sessionid
+      description: Opaque server-side Django session; exact cookie attributes are deployment configuration.
+    CsrfHeader:
+      type: apiKey
+      in: header
+      name: X-CSRFToken
+      description: CSRF token obtained from GET /csrf/; required on unsafe browser requests.
+  parameters:
+    StoreId:
+      name: storeId
+      in: path
+      required: true
+      description: Store UUID; the server verifies it belongs to the active organization.
+      schema:
+        type: string
+        format: uuid
+    DailySaleId:
+      name: dailySaleId
+      in: path
+      required: true
+      description: Daily-sale UUID; the server verifies its store and organization scope.
+      schema:
+        type: string
+        format: uuid
+    AssortmentId:
+      name: assortmentId
+      in: path
+      required: true
+      description: Store-product link UUID; the server verifies its store and organization.
+      schema:
+        type: string
+        format: uuid
+    SupplierId:
+      name: supplierId
+      in: path
+      required: true
+      description: Supplier UUID; the server verifies it belongs to the active organization.
+      schema:
+        type: string
+        format: uuid
+  responses:
+    ValidationError:
+      description: Request validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    RateLimited:
+      description: Provisional rate-limit response and representation.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds before retrying.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    AdministratorRequired:
+      description: The active membership does not have the administrator role required by this initial slice.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ActiveOrganizationRequired:
+      description: No active organization context is selected for this tenant operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ActiveOrganizationRequired'
+    ResourceUnavailable:
+      description: Generic response for a missing or cross-organization resource identifier.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ResourceUnavailable'
+    StoreScopedNotFound:
+      description: >-
+        A store-scoped operation can return either active_organization_required
+        when no organization is selected or resource_unavailable for a missing
+        or cross-organization store/resource ID. Cross-organization existence
+        is not disclosed.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/ActiveOrganizationRequired'
+              - $ref: '#/components/schemas/ResourceUnavailable'
+    OperationalCalendarRequired:
+      description: No effective operational calendar can be resolved for this store and date.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OperationalCalendarRequired'
+    OperationalCalendarVersionConflict:
+      description: >-
+        A calendar version already exists for effectiveFrom, the requested
+        date is not later than the newest recorded version, or the date is not
+        later than the current operational date under the applicable network
+        or store calendar. A first version may be today or earlier only before
+        sales, stock movements/counts, or purchasing/budget transactions
+        exist. Any later version must follow both the latest version and the
+        current operational date, even when no movements exist. For network
+        defaults, the current date is checked for every store using the network
+        default and each store's effective calendar; for store overrides, it
+        is checked using that store's current effective calendar.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OperationalCalendarVersionConflict'
+    ProductSkuConflict:
+      description: SKU already exists in the active organization.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ProductSkuConflict'
+    AssortmentConflict:
+      description: A conflicting store-product assortment link already exists.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AssortmentConflict'
+    StoreNameConflict:
+      description: A store with this name already exists in the active organization.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/StoreNameConflict'
+    OpeningStockAlreadyRecorded:
+      description: An opening stock batch has already been recorded for this store.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OpeningStockAlreadyRecorded'
+    OpeningStockConflict:
+      description: >-
+        The store has no effective operational calendar for the date, or an
+        opening count has already been recorded. The response code identifies
+        which conflict occurred.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/OperationalCalendarRequired'
+              - $ref: '#/components/schemas/OpeningStockAlreadyRecorded'
+    DailySalesAccessRequired:
+      description: >-
+        The response code is administrator_required when the caller lacks the
+        temporary administrator role, or mfa_required when MFA has not been
+        satisfied. The eventual role model grants operators and managers
+        access only to stores assigned to them, after required MFA.
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [code, message]
+            properties:
+              code:
+                type: string
+                enum: [administrator_required, mfa_required]
+              message:
+                type: string
+    CatalogAccessRequired:
+      description: >-
+        The active membership must be an administrator or buyer, and MFA must
+        be satisfied when required by the role. The code identifies the
+        specific access failure.
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [code, message]
+            properties:
+              code:
+                type: string
+                enum: [catalog_access_required, catalog_store_access_required, mfa_required]
+              message:
+                type: string
+    SupplierNameConflict:
+      description: Supplier name already exists case-insensitively in the active organization.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SupplierNameConflict'
+    SupplierConditionConflict:
+      description: >-
+        A condition version already exists for the exact supplier, product,
+        scope, and effectiveFrom, or effectiveFrom does not follow the latest
+        existing version for that scope. The code identifies the conflict.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/SupplierConditionVersionConflict'
+              - $ref: '#/components/schemas/SupplierConditionEffectiveDateConflict'
+    DailySaleWriteConflict:
+      description: >-
+        A write requires an effective operational calendar and a persisted
+        opening-stock cutoff. A conflict also occurs when the daily-sale
+        business key already exists or an operationId is replayed with a
+        different payload. The response code identifies the conflict.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/OperationalCalendarRequired'
+              - $ref: '#/components/schemas/OpeningStockRequired'
+              - $ref: '#/components/schemas/DailySaleKeyConflict'
+              - $ref: '#/components/schemas/IdempotencyConflict'
+    DailySaleCorrectionConflict:
+      description: >-
+        A correction requires an effective operational calendar and a
+        persisted opening-stock cutoff. Reusing an operationId with a
+        different payload returns idempotency_conflict; a stale
+        expectedCurrentQuantity returns daily_sale_quantity_conflict.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/OperationalCalendarRequired'
+              - $ref: '#/components/schemas/OpeningStockRequired'
+              - $ref: '#/components/schemas/IdempotencyConflict'
+              - $ref: '#/components/schemas/DailySaleQuantityConflict'
+  schemas:
+    RegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [organizationName, administratorName, email, password]
+      properties:
+        organizationName:
+          type: string
+          minLength: 2
+          maxLength: 160
+          description: Name of the network; length bounds are provisional.
+        administratorName:
+          type: string
+          minLength: 2
+          maxLength: 160
+          description: Administrator's name; length bounds are provisional.
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Email syntax/length validation is provisional.
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          description: Password policy and validation limits remain to be decided.
+    RegistrationAccepted:
+      description: Provisional response representation.
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          const: confirmation_required
+        message:
+          type: string
+          description: Localized message suitable for display to the user.
+    Problem:
+      description: Provisional error envelope; codes, fields, and localization contract remain to be decided.
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+          description: Safe, localized summary that does not expose secrets.
+        fields:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+    SessionAuthenticated:
+      description: >-
+        Successful authenticated state. The credential is in the server-side
+        session cookie, never in a response body. This schema is returned only
+        after email confirmation and all role-required factors are complete.
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: authenticated
+    CurrentSession:
+      description: >-
+        Provisional session-context representation. Organizations contains
+        only active memberships; activeOrganizationId is null when no context
+        has been selected or the user has no active membership.
+      type: object
+      additionalProperties: false
+      required: [status, activeOrganizationId, organizations]
+      properties:
+        status:
+          type: string
+          enum: [authenticated, organization_selection_required]
+        activeOrganizationId:
+          type: [string, 'null']
+          format: uuid
+          description: Selected server-side context; not an authorization credential.
+        organizations:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationMembership'
+    OrganizationMembership:
+      type: object
+      additionalProperties: false
+      required: [id, name, role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        role:
+          type: string
+          description: Role from the active membership; exact serialized role values are provisional.
+    OrganizationSelectionRequest:
+      description: Organization ID is a context selection request, not authority.
+      type: object
+      additionalProperties: false
+      required: [organizationId]
+      properties:
+        organizationId:
+          type: string
+          format: uuid
+          description: Must identify an active membership owned by the authenticated user.
+    OrganizationUnavailable:
+      description: Generic response for any organization that cannot be selected by this user.
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: organization_unavailable
+        message:
+          type: string
+          description: Same generic wording for unknown organizations and missing active memberships.
+    MfaRequired:
+      description: >-
+        Pre-authentication state only. It has no session cookie and cannot
+        access any application operation. The challenge is bound to the user
+        and purpose, expires after 10 minutes, and allows at most five failed
+        verification attempts.
+      type: object
+      additionalProperties: false
+      required: [status, challengeId, methods]
+      properties:
+        status:
+          type: string
+          const: second_factor_required
+        challengeId:
+          type: string
+          format: uuid
+          description: Opaque reference to a short-lived server-side challenge; not an access token.
+        methods:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum: [webauthn, recovery_code]
+    MfaEnrollmentRequired:
+      description: >-
+        Pre-authentication state for a privileged account without an enrolled
+        WebAuthn credential or unused recovery code. No application session is
+        created until enrollment has been verified. The challenge expires
+        after 10 minutes and allows at most five failed verification attempts.
+      type: object
+      additionalProperties: false
+      required: [status, challengeId, methods]
+      properties:
+        status:
+          type: string
+          const: second_factor_enrollment_required
+        challengeId:
+          type: string
+          format: uuid
+          description: Opaque, short-lived enrollment reference; not an access token.
+        methods:
+          type: array
+          items:
+            type: string
+            const: webauthn
+    PreAuthChallengeRequest:
+      type: object
+      additionalProperties: false
+      required: [challengeId]
+      properties:
+        challengeId:
+          type: string
+          format: uuid
+    WebAuthnOptions:
+      description: >-
+        WebAuthn PublicKeyCredentialCreationOptions or
+        PublicKeyCredentialRequestOptions. The server validates the challenge,
+        configured RP ID and allowed origins, credential signature, replay
+        state, and required user verification.
+      type: object
+      additionalProperties: true
+    WebAuthnVerificationRequest:
+      description: >-
+        WebAuthn registration or assertion response plus the opaque pre-auth
+        challenge reference. The server validates challenge, origin, RP ID,
+        user verification, credential signature, and replay state.
+      type: object
+      additionalProperties: false
+      required: [challengeId, credential]
+      properties:
+        challengeId:
+          type: string
+          format: uuid
+        credential:
+          type: object
+          additionalProperties: true
+    MfaEnrollmentComplete:
+      description: >-
+        Returned once after successful first-factor enrollment. Ten
+        single-use recovery codes are displayed a single time; only their
+        password hashes are stored server-side.
+      type: object
+      required: [status, recoveryCodes]
+      properties:
+        status:
+          type: string
+          const: authenticated
+        recoveryCodes:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            type: string
+    ActiveOrganizationRequired:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: active_organization_required
+        message:
+          type: string
+    ResourceUnavailable:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: resource_unavailable
+        message:
+          type: string
+          description: Generic wording for unknown and cross-organization resource IDs.
+    OperationalCalendarRequired:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: operational_calendar_required
+        message:
+          type: string
+    OperationalCalendarVersionConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: operational_calendar_version_conflict
+        message:
+          type: string
+          description: Generic message for duplicate, non-increasing, or retroactive effectiveFrom dates.
+    ProductSkuConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: product_sku_conflict
+        message:
+          type: string
+    SupplierNameConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: supplier_name_conflict
+        message:
+          type: string
+    SupplierConditionVersionConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: supplier_condition_conflict
+        message:
+          type: string
+    SupplierConditionEffectiveDateConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: supplier_condition_effective_date_conflict
+        message:
+          type: string
+    AssortmentConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: assortment_conflict
+        message:
+          type: string
+    StoreNameConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: store_name_conflict
+        message:
+          type: string
+    OpeningStockAlreadyRecorded:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: opening_stock_already_recorded
+        message:
+          type: string
+    OpeningStockRequired:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: opening_stock_required
+        message:
+          type: string
+          description: A persisted opening count is required before sale writes or corrections.
+    DailySaleKeyConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: daily_sale_conflict
+        message:
+          type: string
+          description: A daily total already exists for this store, SKU, and operational date.
+    IdempotencyConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: idempotency_conflict
+        message:
+          type: string
+          description: The operationId was already used with a different canonical payload.
+    DailySaleQuantityConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: daily_sale_quantity_conflict
+        message:
+          type: string
+          description: The sale total changed after the client read it; reload before correcting.
+    OrganizationOperationalCalendarVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [timeZone, operationalDayStart, effectiveFrom]
+      properties:
+        timeZone:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: IANA time-zone identifier used by the network default.
+        operationalDayStart:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          description: Local wall-clock time in HH:mm; no default is assumed.
+        effectiveFrom:
+          type: string
+          format: date
+          description: Inclusive operational date for this immutable version.
+    OrganizationOperationalCalendarVersion:
+      type: object
+      additionalProperties: false
+      required: [id, timeZone, operationalDayStart, effectiveFrom, createdBy, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        timeZone:
+          type: string
+        operationalDayStart:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+        effectiveFrom:
+          type: string
+          format: date
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+    OrganizationOperationalCalendar:
+      type: object
+      additionalProperties: false
+      required: [versions]
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationOperationalCalendarVersion'
+    StoreOperationalCalendarVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [effectiveFrom]
+      properties:
+        timeZone:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 64
+          description: Null or omitted means inherit the network default for this date.
+        operationalDayStart:
+          type: [string, 'null']
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          description: Null or omitted means inherit the network default for this date.
+        effectiveFrom:
+          type: string
+          format: date
+          description: Inclusive operational date for this immutable override version.
+    StoreOperationalCalendarVersion:
+      type: object
+      additionalProperties: false
+      required: [id, timeZone, operationalDayStart, effectiveFrom, createdBy, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        timeZone:
+          type: [string, 'null']
+          description: Null inherits the network default for this date.
+        operationalDayStart:
+          type: [string, 'null']
+          description: Null inherits the network default for this date.
+        effectiveFrom:
+          type: string
+          format: date
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+    StoreOperationalCalendar:
+      type: object
+      additionalProperties: false
+      required: [storeId, versions]
+      properties:
+        storeId:
+          type: string
+          format: uuid
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/StoreOperationalCalendarVersion'
+    EffectiveOperationalCalendar:
+      type: object
+      additionalProperties: false
+      required: [timeZone, operationalDayStart]
+      properties:
+        timeZone:
+          type: string
+        operationalDayStart:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+    StoreCalendarOverrides:
+      type: array
+      items:
+        $ref: '#/components/schemas/StoreOperationalCalendarVersion'
+    StoreCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        calendarOverrides:
+          type: object
+          additionalProperties: false
+          required: [effectiveFrom]
+          properties:
+            timeZone:
+              type: [string, 'null']
+              minLength: 1
+              maxLength: 64
+            operationalDayStart:
+              type: [string, 'null']
+              pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+            effectiveFrom:
+              type: string
+              format: date
+    Store:
+      type: object
+      additionalProperties: false
+      required: [id, name, isActive, calendarOverrides, effectiveCalendar, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        isActive:
+          type: boolean
+        calendarOverrides:
+          $ref: '#/components/schemas/StoreCalendarOverrides'
+        effectiveCalendar:
+          oneOf:
+            - $ref: '#/components/schemas/EffectiveOperationalCalendar'
+            - type: 'null'
+        createdAt:
+          type: string
+          format: date-time
+    StoreList:
+      type: object
+      additionalProperties: false
+      required: [stores]
+      properties:
+        stores:
+          type: array
+          items:
+            $ref: '#/components/schemas/Store'
+    ProductCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [sku, name, baseUnit]
+      properties:
+        sku:
+          type: string
+          minLength: 1
+          maxLength: 64
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        baseUnit:
+          type: string
+          enum: [unit, kg, l]
+    Product:
+      type: object
+      additionalProperties: false
+      required: [id, sku, name, baseUnit, isActive, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        name:
+          type: string
+        baseUnit:
+          type: string
+          enum: [unit, kg, l]
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    ProductList:
+      type: object
+      additionalProperties: false
+      required: [products]
+      properties:
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+    SupplierCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        contactName:
+          type: string
+          maxLength: 160
+        email:
+          type: string
+          maxLength: 254
+          description: Empty is allowed; a non-empty value must be a valid email address.
+        phone:
+          type: string
+          maxLength: 32
+        notes:
+          type: string
+          maxLength: 1000
+    SupplierUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        contactName:
+          type: string
+          maxLength: 160
+        email:
+          type: string
+          maxLength: 254
+          description: Empty is allowed; a non-empty value must be a valid email address.
+        phone:
+          type: string
+          maxLength: 32
+        notes:
+          type: string
+          maxLength: 1000
+        isActive:
+          type: boolean
+    Supplier:
+      type: object
+      additionalProperties: false
+      required:
+        [id, name, contactName, email, phone, notes, isActive, createdBy, updatedBy, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        contactName:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        notes:
+          type: string
+        isActive:
+          type: boolean
+        createdBy:
+          type: string
+          format: uuid
+        updatedBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    SupplierList:
+      type: object
+      additionalProperties: false
+      required: [suppliers]
+      properties:
+        suppliers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Supplier'
+    SupplierProductConditionCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        [productId, purchaseUnitName, baseUnitsPerPurchaseUnit, pricePerPurchaseUnit, deliveryLeadTimeDays, minimumPurchaseQuantity, purchaseMultiple, isAvailable, effectiveFrom]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        storeId:
+          type: [string, 'null']
+          format: uuid
+          description: Omit or send null for a network-wide condition; supply a store UUID for an override.
+        purchaseUnitName:
+          type: string
+          minLength: 1
+          maxLength: 40
+        baseUnitsPerPurchaseUnit:
+          type: string
+          maxLength: 15
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: Positive exact decimal; stock base units contained in one purchase unit.
+        pricePerPurchaseUnit:
+          type: string
+          maxLength: 15
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+          description: Exact BRL price per purchase unit; zero or greater.
+        deliveryLeadTimeDays:
+          type: integer
+          minimum: 0
+          maximum: 32767
+          description: Calendar days.
+        minimumPurchaseQuantity:
+          type: string
+          maxLength: 15
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: Non-negative exact decimal expressed in the purchase unit.
+        purchaseMultiple:
+          type: string
+          maxLength: 15
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: Positive exact decimal expressed in the purchase unit.
+        isAvailable:
+          type: boolean
+        effectiveFrom:
+          type: string
+          format: date
+    SupplierProductCondition:
+      type: object
+      additionalProperties: false
+      required:
+        [id, supplierId, productId, storeId, effectiveFrom, purchaseUnitName, baseUnitsPerPurchaseUnit, pricePerPurchaseUnit, deliveryLeadTimeDays, minimumPurchaseQuantity, purchaseMultiple, isAvailable, createdBy, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        supplierId:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        storeId:
+          type: [string, 'null']
+          format: uuid
+        effectiveFrom:
+          type: string
+          format: date
+        purchaseUnitName:
+          type: string
+        baseUnitsPerPurchaseUnit:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{3})$'
+        pricePerPurchaseUnit:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{2})$'
+        deliveryLeadTimeDays:
+          type: integer
+          minimum: 0
+          description: Calendar days.
+        minimumPurchaseQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{3})$'
+        purchaseMultiple:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{3})$'
+        isAvailable:
+          type: boolean
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+    SupplierProductConditionList:
+      type: object
+      additionalProperties: false
+      required: [supplierId, conditions]
+      properties:
+        supplierId:
+          type: string
+          format: uuid
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SupplierProductCondition'
+    StoreProductAssortmentCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [productId, effectiveFrom]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        effectiveFrom:
+          type: string
+          format: date
+        effectiveTo:
+          type: [string, 'null']
+          format: date
+          description: >-
+            Optional exclusive end date; null means no scheduled end. When
+            supplied, it must be later than effectiveFrom.
+    StoreProductAssortmentCloseRequest:
+      type: object
+      additionalProperties: false
+      required: [effectiveTo]
+      properties:
+        effectiveTo:
+          type: string
+          format: date
+          description: Exclusive end date, later than effectiveFrom.
+    StoreProductAssortment:
+      type: object
+      additionalProperties: false
+      required: [id, productId, sku, productName, baseUnit, effectiveFrom, effectiveTo, createdBy, createdAt, effectiveToSetBy, effectiveToSetAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        productName:
+          type: string
+        baseUnit:
+          type: string
+          enum: [unit, kg, l]
+        effectiveFrom:
+          type: string
+          format: date
+        effectiveTo:
+          type: [string, 'null']
+          format: date
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        effectiveToSetBy:
+          type: [string, 'null']
+          format: uuid
+          description: Administrator who set the exclusive end date, if any.
+        effectiveToSetAt:
+          type: [string, 'null']
+          format: date-time
+          description: Server time when the exclusive end date was set, if any.
+    StoreProductAssortmentList:
+      type: object
+      additionalProperties: false
+      required: [storeId, assortments]
+      properties:
+        storeId:
+          type: string
+          format: uuid
+        assortments:
+          type: array
+          items:
+            $ref: '#/components/schemas/StoreProductAssortment'
+    OpeningStockCountLineRequest:
+      type: object
+      additionalProperties: false
+      required: [productId, quantity]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: Exact decimal string; whole for unit and at most three fractional digits for kg/l.
+    OpeningStockCountRequest:
+      type: object
+      additionalProperties: false
+      required: [closedOperationalDate, lines]
+      properties:
+        closedOperationalDate:
+          type: string
+          format: date
+          description: Store-local operational date whose physical balance was counted and closed.
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/OpeningStockCountLineRequest'
+    OpeningStockCountLine:
+      type: object
+      additionalProperties: false
+      required: [id, productId, quantity]
+      properties:
+        id:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+    OpeningStockCount:
+      type: object
+      additionalProperties: false
+      required: [id, storeId, closedOperationalDate, cutoffDate, source, lines, createdBy, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        storeId:
+          type: string
+          format: uuid
+        closedOperationalDate:
+          type: string
+          format: date
+        cutoffDate:
+          type: string
+          format: date
+          description: First complete operational date after the closed count date.
+        source:
+          type: string
+          enum: [manual, spreadsheet]
+          description: Server-derived origin of the initial count; this endpoint returns manual.
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpeningStockCountLine'
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+    StockBalance:
+      type: object
+      additionalProperties: false
+      required: [productId, sku, productName, baseUnit, quantity]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        productName:
+          type: string
+        baseUnit:
+          type: string
+          enum: [unit, kg, l]
+        quantity:
+          type: string
+          pattern: '^-?(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: Exact decimal string aggregated from stock movements.
+    StockBalanceList:
+      type: object
+      additionalProperties: false
+      required: [storeId, asOfOperationalDate, balances]
+      properties:
+        storeId:
+          type: string
+          format: uuid
+        asOfOperationalDate:
+          type: string
+          format: date
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/StockBalance'
+    DailySaleCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [productId, operationalDate, quantity, operationId]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        operationalDate:
+          type: string
+          format: date
+          description: >-
+            Store-local business date under the effective timezone and
+            operational-day start; it is not a UTC calendar date.
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: >-
+            Exact nonnegative decimal string. Must be an integer for unit
+            products and may have up to three fractional digits for kg/l;
+            validation limits beyond precision remain to be aligned with the
+            implementation.
+        operationId:
+          type: string
+          format: uuid
+          description: Client-generated idempotency key, unique within the active organization.
+    DailySale:
+      type: object
+      additionalProperties: false
+      required: [id, storeId, productId, sku, productName, baseUnit, operationalDate, quantity, cutoffDate, stockTreatment, demandEligible, initialStockMovementId, operationId, createdBy, createdAt, correctionCount]
+      properties:
+        id:
+          type: string
+          format: uuid
+        storeId:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        productName:
+          type: string
+        baseUnit:
+          type: string
+          enum: [unit, kg, l]
+        operationalDate:
+          type: string
+          format: date
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: Current total after any corrections, in the product's base unit.
+        cutoffDate:
+          type: string
+          format: date
+          description: Persisted first full operational date after opening stock was closed.
+        stockTreatment:
+          type: string
+          enum: [demand_only, outbound_movement]
+          description: >-
+            demand_only applies before cutoffDate; outbound_movement applies
+            on or after cutoffDate.
+        demandEligible:
+          type: boolean
+          description: False when the product was outside the demand-eligible assortment period.
+        initialStockMovementId:
+          type: [string, 'null']
+          format: uuid
+          description: Initial outbound movement, null for a demand-only total; correction movements are listed on their audit records.
+        operationId:
+          type: string
+          format: uuid
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+          description: Server-generated UTC audit timestamp.
+        correctionCount:
+          type: integer
+          minimum: 0
+    DailySaleList:
+      type: object
+      additionalProperties: false
+      required: [storeId, operationalDateFrom, operationalDateTo, sales]
+      properties:
+        storeId:
+          type: string
+          format: uuid
+        operationalDateFrom:
+          type: string
+          format: date
+        operationalDateTo:
+          type: string
+          format: date
+        sales:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailySale'
+    DailySaleCorrectionRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedCurrentQuantity, newQuantity, reason, operationId]
+      properties:
+        expectedCurrentQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: Exact total last observed by the client; the server compares it under a row lock.
+        newQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: >-
+            Replacement total, not a delta. Must be an integer for unit
+            products and may have up to three fractional digits for kg/l.
+        reason:
+          type: string
+          minLength: 1
+          description: Required human explanation; maximum length and normalization remain provisional.
+        operationId:
+          type: string
+          format: uuid
+          description: Client-generated idempotency key, unique within the active organization.
+    DailySaleCorrection:
+      type: object
+      additionalProperties: false
+      required: [id, dailySaleId, operationId, previousQuantity, newQuantity, reason, correctedBy, correctedAt, compensatingMovementId]
+      properties:
+        id:
+          type: string
+          format: uuid
+        dailySaleId:
+          type: string
+          format: uuid
+        operationId:
+          type: string
+          format: uuid
+        previousQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        newQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        reason:
+          type: string
+        correctedBy:
+          type: string
+          format: uuid
+        correctedAt:
+          type: string
+          format: date-time
+          description: Server-generated UTC audit timestamp.
+        compensatingMovementId:
+          type: [string, 'null']
+          format: uuid
+          description: >-
+            Movement created atomically for the net quantity difference when
+            the sale date is on or after cutoffDate and the difference is
+            nonzero; null otherwise.
+    DailySaleCorrectionList:
+      type: object
+      additionalProperties: false
+      required: [dailySaleId, corrections]
+      properties:
+        dailySaleId:
+          type: string
+          format: uuid
+        corrections:
+          type: array
+          description: Immutable correction history in chronological order.
+          items:
+            $ref: '#/components/schemas/DailySaleCorrection'
