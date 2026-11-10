@@ -1133,8 +1133,9 @@ paths:
         is suggested. Minimum stock and safety days resolve independently by
         store-product, product, category, then network; the review interval
         resolves by store then network. Supplier choice prioritizes avoiding
-        predicted shortage, then compares known merchandise unit cost among
-        suppliers that arrive in time. Freight, budgets, and expected purchase
+        predicted shortage, then compares the calculated known merchandise
+        subtotal after package minimums and multiples among suppliers that
+        arrive in time. Freight, budgets, and expected purchase
         deliveries are not modeled in this increment and are disclosed in the
         response. Access is temporarily administrator-only until store-scoped
         assignments are implemented.
@@ -3535,8 +3536,11 @@ components:
     SupplierRecommendationComparison:
       type: object
       additionalProperties: false
-      required: [supplierId, supplierName, availability, deliveryLeadTimeDays, unitCost, purchaseUnitName, baseUnitsPerPurchaseUnit, minimumPurchaseQuantity, purchaseMultiple, freightStatus, costCompleteness, partialCost, stockAtArrival, predictedShortageBeforeArrival, quantityNeededBase, orderQuantity, orderQuantityBase, excessOverTarget, selected, ruptureAvoidanceRank, costRank, reasonCodes]
+      required: [supplierConditionId, supplierId, supplierName, availability, deliveryLeadTimeDays, unitCost, knownMerchandiseCost, purchaseUnitName, baseUnitsPerPurchaseUnit, minimumPurchaseQuantity, purchaseMultiple, freightStatus, costCompleteness, partialCost, stockAtArrival, predictedShortageBeforeArrival, quantityNeededBase, orderQuantity, orderQuantityBase, excessOverTarget, selected, ruptureAvoidanceRank, costRank, reasonCodes]
       properties:
+        supplierConditionId:
+          type: string
+          format: uuid
         supplierId:
           type: string
           format: uuid
@@ -3552,6 +3556,10 @@ components:
           type: string
           pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
           description: Price per purchase unit in BRL; no freight is currently stored.
+        knownMerchandiseCost:
+          type: [string, 'null']
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$'
+          description: Calculated merchandise subtotal after minimum and package multiple; freight is excluded and cost remains partial.
         purchaseUnitName:
           type: string
         baseUnitsPerPurchaseUnit:
