@@ -13,6 +13,7 @@ type SupplierComparison = {
   costCompleteness: 'complete' | 'partial' | 'unknown' | string;
   minimumPurchaseQuantity: string;
   purchaseMultiple: string;
+  orderQuantity: string | null;
   stockAtArrival: string | null;
   predictedShortageBeforeArrival: string;
   quantityNeededBase: string | null;
@@ -25,7 +26,7 @@ type SupplierComparison = {
   reasonCodes: string[];
 };
 type Recommendation = {
-  product: { id: string; sku: string; name: string; baseUnit: ProductUnit; categoryName?: string | null };
+  product: { id: string; sku: string; name: string; baseUnit: ProductUnit; categoryId: string | null; categoryName?: string | null };
   currentStock: string;
   averageDailyDemand: string | null;
   validDemandDays: number;
@@ -38,6 +39,7 @@ type Recommendation = {
   evidence: {
     demandWindowStart: string;
     demandWindowEnd: string;
+    explicitSalesDays: number;
     excludedOutOfStockDays: number;
     completeSalesDays: number;
   };
@@ -46,6 +48,9 @@ type Recommendation = {
     safetyDays: number | null;
     reviewIntervalDays: number | null;
     source: string;
+    minimumStockSource?: string | null;
+    safetyDaysSource?: string | null;
+    reviewIntervalSource?: string | null;
   };
   supplierComparisons: SupplierComparison[];
   reasonCodes: string[];
@@ -402,13 +407,13 @@ export default function ReplenishmentRecommendationsPanel({
     setSetupError('');
     setSetupNotice('');
     try {
-      const response = await apiPost<{ coveragePeriods: SalesCoveragePeriod[] }>(
+      const response = await apiPost<SalesCoveragePeriod>(
         `/stores/${storeId}/sales-coverage/`,
         { operationalDateFrom: salesCoverageFrom, operationalDateTo: salesCoverageTo },
       );
       setCoveragePeriods((current) => {
         const merged = new Map(current.map((period) => [period.id, period]));
-        response.coveragePeriods.forEach((period) => merged.set(period.id, period));
+        merged.set(response.id, response);
         return [...merged.values()].sort((left, right) => right.operationalDateTo.localeCompare(left.operationalDateTo));
       });
       setSalesCoverageFrom('');
@@ -428,13 +433,13 @@ export default function ReplenishmentRecommendationsPanel({
     setSetupError('');
     setSetupNotice('');
     try {
-      const response = await apiPost<{ outOfStockDays: OutOfStockDay[] }>(
+      const response = await apiPost<OutOfStockDay>(
         `/stores/${storeId}/out-of-stock-days/`,
         { productId: outOfStockProductId, operationalDate: outOfStockDate },
       );
       setOutOfStockDays((current) => {
         const merged = new Map(current.map((day) => [day.id, day]));
-        response.outOfStockDays.forEach((day) => merged.set(day.id, day));
+        merged.set(response.id, response);
         return [...merged.values()].sort((left, right) => right.operationalDate.localeCompare(left.operationalDate));
       });
       setOutOfStockDate('');
@@ -531,8 +536,9 @@ export default function ReplenishmentRecommendationsPanel({
 
                     <div className="recommendation-explanation">
                       <p><strong>Janela de demanda:</strong> {displayDate(item.evidence.demandWindowStart)} a {displayDate(item.evidence.demandWindowEnd)}.</p>
-                      <p><strong>Dados usados:</strong> {item.evidence.completeSalesDays} dias completos; {item.evidence.excludedOutOfStockDays} dias sem estoque excluídos.</p>
+                      <p><strong>Dados usados:</strong> {item.evidence.explicitSalesDays} dias com venda explícita, {item.evidence.completeSalesDays} dias cobertos e {item.evidence.excludedOutOfStockDays} dias sem estoque excluídos.</p>
                       <p><strong>Parâmetros efetivos:</strong> mínimo {item.effectiveParameters.minimumStock === null ? 'não configurado' : `${displayExactDecimal(item.effectiveParameters.minimumStock)} ${unitLabel(item.product.baseUnit)}`}, segurança {item.effectiveParameters.safetyDays ?? 'não configurada'} dias, revisão {item.effectiveParameters.reviewIntervalDays ?? 'não configurada'} dias ({parameterSourceLabel(item.effectiveParameters.source)}).</p>
+                      <p className="replenishment-parameter-sources"><strong>Origem dos parâmetros:</strong> mínimo {item.effectiveParameters.minimumStockSource ? parameterSourceLabel(item.effectiveParameters.minimumStockSource) : 'não informada'}; segurança {item.effectiveParameters.safetyDaysSource ? parameterSourceLabel(item.effectiveParameters.safetyDaysSource) : 'não informada'}; revisão {item.effectiveParameters.reviewIntervalSource ? parameterSourceLabel(item.effectiveParameters.reviewIntervalSource) : 'não informada'}.</p>
                       {item.suggestedQuantity !== null && item.quantityToOrder !== null && item.suggestedQuantity !== item.quantityToOrder && (
                         <p><strong>Necessidade antes do ajuste:</strong> {displayExactDecimal(item.suggestedQuantity)} {unitLabel(item.product.baseUnit)}; quantidade final {displayExactDecimal(item.quantityToOrder)} {unitLabel(item.product.baseUnit)} para respeitar o mínimo e o múltiplo de embalagem.</p>
                       )}
@@ -561,7 +567,11 @@ export default function ReplenishmentRecommendationsPanel({
                                   <td>{supplier.unitCost === null ? 'Desconhecido' : `R$ ${displayExactDecimal(supplier.unitCost)}`}</td>
                                   <td>{freightLabel(supplier.freightStatus)}{supplier.costCompleteness === 'partial' || supplier.partialCost ? <span className="partial-cost-label"> · total parcial</span> : supplier.costCompleteness === 'unknown' ? <span className="partial-cost-label"> · total desconhecido</span> : null}</td>
                                   <td>{displayExactDecimal(supplier.minimumPurchaseQuantity)} / {displayExactDecimal(supplier.purchaseMultiple)} {supplier.purchaseUnitName}</td>
-                                  <td>{supplier.orderQuantityBase === null ? 'Não recomendada' : `${displayExactDecimal(supplier.orderQuantityBase)} ${unitLabel(item.product.baseUnit)}`}{supplier.selected && <span className="supplier-selected-label"> · sugerido</span>}</td>
+                                  <td>
+                                    {supplier.orderQuantity === null ? 'Não recomendada' : `${displayExactDecimal(supplier.orderQuantity)} ${supplier.purchaseUnitName}`}
+                                    {supplier.orderQuantityBase !== null && <span className="supplier-reasons">({displayExactDecimal(supplier.orderQuantityBase)} {unitLabel(item.product.baseUnit)} em estoque)</span>}
+                                    {supplier.selected && <span className="supplier-selected-label"> · sugerido</span>}
+                                  </td>
                                   <td>
                                     {supplier.ruptureAvoidanceRank !== null && `Prazo ${supplier.ruptureAvoidanceRank}`}
                                     {supplier.costRank !== null && ` · custo ${supplier.costRank}`}
