@@ -493,8 +493,10 @@ export default function App() {
 
         {screen === 'authenticated' && activeOrganizationId && (
           <OpeningStockWorkspace
+            key={activeOrganizationId}
             accountBusy={busy}
             canSwitchOrganization={organizations.length > 1}
+            canManageCatalog={['administrator', 'buyer'].includes(organizations.find((organization) => organization.id === activeOrganizationId)?.role ?? '')}
             isAdministrator={organizations.find((organization) => organization.id === activeOrganizationId)?.role === 'administrator'}
             onSignOut={signOut}
             onSwitchOrganization={() => setScreen('organization-selection')}

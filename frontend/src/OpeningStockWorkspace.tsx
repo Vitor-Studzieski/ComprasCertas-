@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { apiGet, apiPost, ApiError } from './api';
 import DailySalesPanel from './DailySalesPanel';
+import SupplierCatalogPanel from './SupplierCatalogPanel';
 
 type CalendarVersion = {
   id: string;
@@ -58,6 +59,7 @@ type WorkspaceData = {
 type Props = {
   organizationName: string;
   role: string;
+  canManageCatalog: boolean;
   isAdministrator: boolean;
   onSwitchOrganization: () => void;
   canSwitchOrganization: boolean;
@@ -93,6 +95,7 @@ function unitLabel(unit: Product['baseUnit']): string {
 export default function OpeningStockWorkspace({
   organizationName,
   role,
+  canManageCatalog,
   isAdministrator,
   onSwitchOrganization,
   canSwitchOrganization,
@@ -713,6 +716,7 @@ export default function OpeningStockWorkspace({
           />
         </>
       )}
+      <SupplierCatalogPanel canManageCatalog={canManageCatalog} isAdministrator={isAdministrator} />
     </div>
   );
 }
