@@ -993,6 +993,193 @@ paths:
           $ref: '#/components/responses/StoreScopedNotFound'
         '409':
           $ref: '#/components/responses/OperationalCalendarRequired'
+  /stores/{storeId}/daily-sales/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+    get:
+      operationId: listDailySales
+      summary: List daily product sales totals
+      description: >-
+        Daily totals are scoped to the validated active organization and this
+        store. operationalDate is a store-local business date determined by
+        the effective time zone and operational-day start; the query dates
+        are already operational dates and do not include a client timezone.
+        The role model is store-scoped: an operator or manager assigned to the
+        store may read these records. This PR temporarily permits only
+        administrators until store-role onboarding is available. Reads may be
+        used before an opening count and return an empty list when no sales
+        exist. Product dates before the opening cutoff are demand-only while
+        within the demand-eligible assortment period; records at/after it may
+        have created stock movements. Sales after an assortment end may be
+        retained for liquidation but are not demand inputs.
+      tags: [Sales]
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: operationalDateFrom
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: operationalDateTo
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Daily totals for the inclusive store-local operational-date range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailySaleList'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/DailySalesAccessRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/OperationalCalendarRequired'
+    post:
+      operationId: createDailySale
+      summary: Record a manual daily sales total
+      description: >-
+        The organization is derived from the validated active session and the
+        store is validated within it; no organizationId is accepted. The
+        effective store calendar must resolve for operationalDate. An opening
+        stock count must have established the store cutoff before a sale can
+        be written. For operationalDate before cutoffDate, the total affects
+        demand only and creates no movement. On or after cutoffDate, the total
+        and one outbound stock movement are committed atomically. Products
+        must belong to this organization and have a store-product link whose
+        effectiveFrom is on or before operationalDate. After the link's
+        exclusive effectiveTo, explicit sales may still be recorded to
+        liquidate residual stock but are not demand-eligible or recommendation
+        inputs.
+
+        Authorization target: an operator or manager assigned to this store.
+        This PR temporarily gates writes to administrators until store-role
+        onboarding is available; the eventual role check must remain
+        store-scoped. Browser writes require CSRF.
+
+        operationId is a client-generated UUID idempotency key. Repeating the
+        same operationId with the same canonical payload returns the existing
+        sale; reusing it with a different payload returns 409. The unique
+        business key is organization + store + SKU + operationalDate; a
+        different operationId for an existing key also returns 409.
+      tags: [Sales]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DailySaleCreateRequest'
+      responses:
+        '201':
+          description: New daily total recorded; if at/after cutoff, the outbound movement committed atomically.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailySale'
+        '200':
+          description: Idempotent replay; returns the existing sale resource without duplicating its movement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailySale'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/DailySalesAccessRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/DailySaleWriteConflict'
+  /stores/{storeId}/daily-sales/{dailySaleId}/corrections/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/DailySaleId'
+    get:
+      operationId: listDailySaleCorrections
+      summary: List the audit history of a daily sales total
+      description: >-
+        Returns every explicit correction in chronological order, preserving
+        the previous and new totals, actor, reason, server timestamp, and any
+        compensating movement. Authorization follows the store-scoped role
+        model; this PR temporarily permits only administrators until
+        store-role onboarding is available.
+      tags: [Sales]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Correction audit history for the daily sale.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailySaleCorrectionList'
+        '403':
+          $ref: '#/components/responses/DailySalesAccessRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    post:
+      operationId: correctDailySale
+      summary: Explicitly correct a daily sales total
+      description: >-
+        Replaces the current daily total and appends an immutable correction
+        audit record; it does not create a second daily-sale row. The request
+        must include expectedCurrentQuantity from the screen's latest read.
+        After idempotent replay lookup, the backend locks the sale and rejects
+        a correction if its current quantity no longer matches that expected
+        value. The actor and server time are derived and recorded by the
+        backend, while reason is required in the request. The effective store
+        calendar and an existing opening cutoff are required. If
+        operationalDate is before cutoffDate, the correction changes demand
+        data only. On/after cutoffDate, the correction and a compensating
+        stock movement for the difference only are committed in the same
+        transaction. Retrying the same operationId with the same payload
+        returns the existing correction; reusing that ID with a different
+        payload returns 409. Authorization target is a store-assigned
+        operator or manager; this PR temporarily gates writes to
+        administrators until store-role onboarding is available. Browser
+        writes require CSRF.
+      tags: [Sales]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DailySaleCorrectionRequest'
+      responses:
+        '201':
+          description: Correction recorded with old/new values and audit metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailySaleCorrection'
+        '200':
+          description: Idempotent replay; returns the existing correction without duplicating its movement.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailySaleCorrection'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/DailySalesAccessRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          $ref: '#/components/responses/DailySaleCorrectionConflict'
 components:
   securitySchemes:
     SessionCookie:
@@ -1011,6 +1198,14 @@ components:
       in: path
       required: true
       description: Store UUID; the server verifies it belongs to the active organization.
+      schema:
+        type: string
+        format: uuid
+    DailySaleId:
+      name: dailySaleId
+      in: path
+      required: true
+      description: Daily-sale UUID; the server verifies its store and organization scope.
       schema:
         type: string
         format: uuid
@@ -1127,6 +1322,43 @@ components:
             oneOf:
               - $ref: '#/components/schemas/OperationalCalendarRequired'
               - $ref: '#/components/schemas/OpeningStockAlreadyRecorded'
+    DailySalesAccessRequired:
+      description: >-
+        Access is temporarily administrator-only in this first cycle. The
+        eventual role model grants operators and managers access only to
+        stores assigned to them.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    DailySaleWriteConflict:
+      description: >-
+        A write requires an effective operational calendar and a persisted
+        opening-stock cutoff. A conflict also occurs when the daily-sale
+        business key already exists or an operationId is replayed with a
+        different payload. The response code identifies the conflict.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/OperationalCalendarRequired'
+              - $ref: '#/components/schemas/OpeningStockRequired'
+              - $ref: '#/components/schemas/DailySaleKeyConflict'
+              - $ref: '#/components/schemas/IdempotencyConflict'
+    DailySaleCorrectionConflict:
+      description: >-
+        A correction requires an effective operational calendar and a
+        persisted opening-stock cutoff. Reusing an operationId with a
+        different payload returns idempotency_conflict; a stale
+        expectedCurrentQuantity returns daily_sale_quantity_conflict.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/OperationalCalendarRequired'
+              - $ref: '#/components/schemas/OpeningStockRequired'
+              - $ref: '#/components/schemas/IdempotencyConflict'
+              - $ref: '#/components/schemas/DailySaleQuantityConflict'
   schemas:
     RegistrationRequest:
       type: object
@@ -1421,6 +1653,50 @@ components:
           const: opening_stock_already_recorded
         message:
           type: string
+    OpeningStockRequired:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: opening_stock_required
+        message:
+          type: string
+          description: A persisted opening count is required before sale writes or corrections.
+    DailySaleKeyConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: daily_sale_conflict
+        message:
+          type: string
+          description: A daily total already exists for this store, SKU, and operational date.
+    IdempotencyConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: idempotency_conflict
+        message:
+          type: string
+          description: The operationId was already used with a different canonical payload.
+    DailySaleQuantityConflict:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          const: daily_sale_quantity_conflict
+        message:
+          type: string
+          description: The sale total changed after the client read it; reload before correcting.
     OrganizationOperationalCalendarVersionRequest:
       type: object
       additionalProperties: false
@@ -1818,3 +2094,177 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/StockBalance'
+    DailySaleCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [productId, operationalDate, quantity, operationId]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        operationalDate:
+          type: string
+          format: date
+          description: >-
+            Store-local business date under the effective timezone and
+            operational-day start; it is not a UTC calendar date.
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: >-
+            Exact nonnegative decimal string. Must be an integer for unit
+            products and may have up to three fractional digits for kg/l;
+            validation limits beyond precision remain to be aligned with the
+            implementation.
+        operationId:
+          type: string
+          format: uuid
+          description: Client-generated idempotency key, unique within the active organization.
+    DailySale:
+      type: object
+      additionalProperties: false
+      required: [id, storeId, productId, sku, productName, baseUnit, operationalDate, quantity, cutoffDate, stockTreatment, demandEligible, initialStockMovementId, operationId, createdBy, createdAt, correctionCount]
+      properties:
+        id:
+          type: string
+          format: uuid
+        storeId:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        productName:
+          type: string
+        baseUnit:
+          type: string
+          enum: [unit, kg, l]
+        operationalDate:
+          type: string
+          format: date
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: Current total after any corrections, in the product's base unit.
+        cutoffDate:
+          type: string
+          format: date
+          description: Persisted first full operational date after opening stock was closed.
+        stockTreatment:
+          type: string
+          enum: [demand_only, outbound_movement]
+          description: >-
+            demand_only applies before cutoffDate; outbound_movement applies
+            on or after cutoffDate.
+        demandEligible:
+          type: boolean
+          description: False when the product was outside the demand-eligible assortment period.
+        initialStockMovementId:
+          type: [string, 'null']
+          format: uuid
+          description: Initial outbound movement, null for a demand-only total; correction movements are listed on their audit records.
+        operationId:
+          type: string
+          format: uuid
+        createdBy:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+          description: Server-generated UTC audit timestamp.
+        correctionCount:
+          type: integer
+          minimum: 0
+    DailySaleList:
+      type: object
+      additionalProperties: false
+      required: [storeId, operationalDateFrom, operationalDateTo, sales]
+      properties:
+        storeId:
+          type: string
+          format: uuid
+        operationalDateFrom:
+          type: string
+          format: date
+        operationalDateTo:
+          type: string
+          format: date
+        sales:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailySale'
+    DailySaleCorrectionRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedCurrentQuantity, newQuantity, reason, operationId]
+      properties:
+        expectedCurrentQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: Exact total last observed by the client; the server compares it under a row lock.
+        newQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: >-
+            Replacement total, not a delta. Must be an integer for unit
+            products and may have up to three fractional digits for kg/l.
+        reason:
+          type: string
+          minLength: 1
+          description: Required human explanation; maximum length and normalization remain provisional.
+        operationId:
+          type: string
+          format: uuid
+          description: Client-generated idempotency key, unique within the active organization.
+    DailySaleCorrection:
+      type: object
+      additionalProperties: false
+      required: [id, dailySaleId, operationId, previousQuantity, newQuantity, reason, correctedBy, correctedAt, compensatingMovementId]
+      properties:
+        id:
+          type: string
+          format: uuid
+        dailySaleId:
+          type: string
+          format: uuid
+        operationId:
+          type: string
+          format: uuid
+        previousQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        newQuantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+        reason:
+          type: string
+        correctedBy:
+          type: string
+          format: uuid
+        correctedAt:
+          type: string
+          format: date-time
+          description: Server-generated UTC audit timestamp.
+        compensatingMovementId:
+          type: [string, 'null']
+          format: uuid
+          description: >-
+            Movement created atomically for the net quantity difference when
+            the sale date is on or after cutoffDate and the difference is
+            nonzero; null otherwise.
+    DailySaleCorrectionList:
+      type: object
+      additionalProperties: false
+      required: [dailySaleId, corrections]
+      properties:
+        dailySaleId:
+          type: string
+          format: uuid
+        corrections:
+          type: array
+          description: Immutable correction history in chronological order.
+          items:
+            $ref: '#/components/schemas/DailySaleCorrection'
