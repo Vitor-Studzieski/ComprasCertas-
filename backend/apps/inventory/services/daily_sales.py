@@ -234,7 +234,10 @@ def list_daily_sales(
         return store, opening_batch, sales
 
 
-def create_daily_sale(*, request, store_id, product_id, operational_date, quantity, operation_id):
+def create_daily_sale(
+    *, request, store_id, product_id, operational_date, quantity, operation_id,
+    source=DailyProductSale.Source.MANUAL,
+):
     with transaction.atomic():
         organization_id = set_active_organization_rls_context(
             user=request.user,
@@ -329,7 +332,7 @@ def create_daily_sale(*, request, store_id, product_id, operational_date, quanti
             product=product,
             operational_date=operational_date,
             quantity=quantity,
-            source=DailyProductSale.Source.MANUAL,
+            source=source,
             operation_id=operation_id,
             created_by=request.user,
         )
