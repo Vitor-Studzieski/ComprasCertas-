@@ -184,6 +184,7 @@ class ProductCreateRequestSerializer(StrictInputMixin, serializers.Serializer):
     sku = serializers.CharField(min_length=1, max_length=64, trim_whitespace=True)
     name = serializers.CharField(min_length=1, max_length=200, trim_whitespace=True)
     baseUnit = serializers.ChoiceField(choices=Product.Unit.choices)
+    categoryId = serializers.UUIDField(source="category_id", required=False, allow_null=True)
 
     def validate_sku(self, value):
         if not value:
@@ -200,10 +201,12 @@ class ProductSerializer(serializers.ModelSerializer):
     baseUnit = serializers.CharField(source="unit")
     isActive = serializers.BooleanField(source="is_active")
     createdAt = serializers.DateTimeField(source="created_at")
+    categoryId = serializers.UUIDField(source="category_id", allow_null=True)
+    categoryName = serializers.CharField(source="category.name", allow_null=True)
 
     class Meta:
         model = Product
-        fields = ["id", "sku", "name", "baseUnit", "isActive", "createdAt"]
+        fields = ["id", "sku", "name", "baseUnit", "isActive", "createdAt", "categoryId", "categoryName"]
 
 
 class ProductListSerializer(serializers.Serializer):

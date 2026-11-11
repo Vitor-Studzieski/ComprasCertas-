@@ -7,6 +7,7 @@ from apps.inventory.views import (
     OrganizationOperationalCalendarVersionView,
     OrganizationOperationalCalendarView,
     ProductListCreateView,
+    ProductCategoryListCreateView,
     StoreListCreateView,
     StoreOperationalCalendarVersionView,
     StoreProductAssortmentCloseView,
@@ -14,6 +15,12 @@ from apps.inventory.views import (
     StoreStockBalanceListView,
     StoreDailyProductSalesView,
     StoreDailySaleCorrectionsView,
+)
+from apps.inventory.replenishment_views import (
+    ReplenishmentPolicyView,
+    StoreOutOfStockDaysView,
+    StoreReplenishmentRecommendationsView,
+    StoreSalesCoverageView,
 )
 
 urlpatterns = [
@@ -34,6 +41,18 @@ urlpatterns = [
         name="store-operational-calendar-version-list-create",
     ),
     path("products/", ProductListCreateView.as_view(), name="product-list-create"),
+    path("product-categories/", ProductCategoryListCreateView.as_view(), name="product-category-list-create"),
+    path("replenishment-settings/", ReplenishmentPolicyView.as_view(), name="network-replenishment-settings"),
+    path(
+        "product-categories/<uuid:category_id>/replenishment-settings/",
+        ReplenishmentPolicyView.as_view(),
+        name="category-replenishment-settings",
+    ),
+    path(
+        "products/<uuid:product_id>/replenishment-settings/",
+        ReplenishmentPolicyView.as_view(),
+        name="product-replenishment-settings",
+    ),
     path(
         "stores/<uuid:store_id>/product-assortments/",
         StoreProductAssortmentListCreateView.as_view(),
@@ -53,6 +72,31 @@ urlpatterns = [
         "stores/<uuid:store_id>/stock-balances/",
         StoreStockBalanceListView.as_view(),
         name="store-stock-balance-list",
+    ),
+    path(
+        "stores/<uuid:store_id>/replenishment-settings/",
+        ReplenishmentPolicyView.as_view(),
+        name="store-replenishment-settings",
+    ),
+    path(
+        "stores/<uuid:store_id>/products/<uuid:product_id>/replenishment-settings/",
+        ReplenishmentPolicyView.as_view(),
+        name="store-product-replenishment-settings",
+    ),
+    path(
+        "stores/<uuid:store_id>/replenishment-recommendations/",
+        StoreReplenishmentRecommendationsView.as_view(),
+        name="store-replenishment-recommendations",
+    ),
+    path(
+        "stores/<uuid:store_id>/sales-coverage/",
+        StoreSalesCoverageView.as_view(),
+        name="store-sales-coverage",
+    ),
+    path(
+        "stores/<uuid:store_id>/out-of-stock-days/",
+        StoreOutOfStockDaysView.as_view(),
+        name="store-out-of-stock-days",
     ),
     path(
         "stores/<uuid:store_id>/daily-sales/",
