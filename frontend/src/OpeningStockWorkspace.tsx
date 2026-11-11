@@ -4,6 +4,7 @@ import DailySalesPanel from './DailySalesPanel';
 import PurchaseOrdersPanel from './PurchaseOrdersPanel';
 import ReplenishmentRecommendationsPanel from './ReplenishmentRecommendationsPanel';
 import SupplierCatalogPanel from './SupplierCatalogPanel';
+import SpreadsheetImportsPanel from './SpreadsheetImportsPanel';
 import TeamAccessPanel from './TeamAccessPanel';
 
 type CalendarVersion = {
@@ -818,6 +819,13 @@ export default function OpeningStockWorkspace({
 
       {!loading && selectedStoreId && (
         <>
+          <SpreadsheetImportsPanel
+            canManageCatalog={canManageCatalog}
+            onImported={() => setReloadSequence((value) => value + 1)}
+            role={role}
+            selectedStoreId={selectedStoreId}
+            stores={stores}
+          />
           <DailySalesPanel
             assortments={assortments}
             canEdit={isAdministrator || role === 'store_manager' || role === 'operator'}
@@ -846,6 +854,15 @@ export default function OpeningStockWorkspace({
           />
           {isAdministrator && <TeamAccessPanel organizationName={organizationName} />}
         </>
+      )}
+      {!loading && !selectedStoreId && canManageCatalog && (
+        <SpreadsheetImportsPanel
+          canManageCatalog={canManageCatalog}
+          onImported={() => setReloadSequence((value) => value + 1)}
+          role={role}
+          selectedStoreId=""
+          stores={stores}
+        />
       )}
       <SupplierCatalogPanel canManageCatalog={canManageCatalog} isAdministrator={isAdministrator} role={role} />
     </div>
