@@ -40,6 +40,7 @@ from apps.catalog.services import (
 )
 from apps.identity.models import Membership
 from apps.identity.permissions import MfaForPrivilegedUsers
+from apps.identity.services.access import StoreAccessDenied, require_store_access
 from apps.identity.services.organization_context import (
     ActiveOrganizationRequired,
     set_active_organization_rls_context,
@@ -84,9 +85,24 @@ def _catalog_access_required():
 def _catalog_store_scope_required():
     return _problem(
         "catalog_store_access_required",
-        "Condições específicas por loja exigem acesso de administrador nesta etapa.",
+        "Você precisa ter acesso atribuído à loja para configurar condições específicas nela.",
         HTTP_403_FORBIDDEN,
     )
+
+
+def _require_catalog_store_scope(*, request, organization_id, role, store_id):
+    if store_id is None or role == Membership.Role.ADMINISTRATOR:
+        return None
+    try:
+        require_store_access(
+            organization_id=organization_id,
+            user=request.user,
+            store_id=store_id,
+            allowed_roles=[Membership.Role.BUYER],
+        )
+    except StoreAccessDenied:
+        return _catalog_store_scope_required()
+    return None
 
 
 def _supplier_name_conflict():
@@ -256,14 +272,20 @@ class SupplierProductConditionsView(CatalogAPIView):
                 if error:
                     return error
                 role = _catalog_membership_role(request, organization_id)
-                if role == Membership.Role.BUYER and query_serializer.validated_data.get("store_id") is not None:
-                    return _catalog_store_scope_required()
+                scope_error = _require_catalog_store_scope(
+                    request=request,
+                    organization_id=organization_id,
+                    role=role,
+                    store_id=query_serializer.validated_data.get("store_id"),
+                )
+                if scope_error:
+                    return scope_error
                 supplier, conditions = list_supplier_conditions(
                     request=request,
                     supplier_id=supplier_id,
                     product_id=query_serializer.validated_data.get("product_id"),
                     store_id=query_serializer.validated_data.get("store_id"),
-                    network_only=role == Membership.Role.BUYER,
+                    network_only=role == Membership.Role.BUYER and query_serializer.validated_data.get("store_id") is None,
                 )
         except ActiveOrganizationRequired:
             return _active_organization_required()
@@ -292,8 +314,14 @@ class SupplierProductConditionsView(CatalogAPIView):
                 if error:
                     return error
                 role = _catalog_membership_role(request, organization_id)
-                if role == Membership.Role.BUYER and serializer.validated_data.get("store_id") is not None:
-                    return _catalog_store_scope_required()
+                scope_error = _require_catalog_store_scope(
+                    request=request,
+                    organization_id=organization_id,
+                    role=role,
+                    store_id=serializer.validated_data.get("store_id"),
+                )
+                if scope_error:
+                    return scope_error
                 condition = create_supplier_condition(
                     request=request,
                     supplier_id=supplier_id,

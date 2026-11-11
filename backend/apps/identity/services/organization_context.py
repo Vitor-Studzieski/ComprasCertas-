@@ -5,7 +5,7 @@ from uuid import UUID
 from django.db import connection, transaction
 
 from apps.identity.db_context import set_rls_context
-from apps.identity.models import Membership
+from apps.identity.models import Membership, StoreAccessAssignment
 
 
 ACTIVE_ORGANIZATION_SESSION_KEY = "active_organization_id"
@@ -22,7 +22,7 @@ def _active_membership_rows(user):
             status=Membership.Status.ACTIVE,
             organization__is_active=True,
         )
-        .values("organization_id", "organization__name", "role")
+        .values("id", "organization_id", "organization__name", "role")
     )
 
 
@@ -46,6 +46,21 @@ def get_current_session_state(*, user, session) -> dict:
     with transaction.atomic():
         set_rls_context(user_id=user.pk)
         rows = _active_membership_rows(user)
+        store_scopes = {}
+        for row in rows:
+            organization_id = row["organization_id"]
+            if row["role"] == Membership.Role.ADMINISTRATOR:
+                store_scopes[row["id"]] = None
+                continue
+            set_rls_context(organization_id=organization_id, user_id=user.pk)
+            store_scopes[row["id"]] = [
+                str(store_id)
+                for store_id in StoreAccessAssignment.objects.filter(
+                    organization_id=organization_id,
+                    membership_id=row["id"],
+                    revoked_at__isnull=True,
+                ).values_list("store_id", flat=True)
+            ]
 
     active_id = None
     raw_active_id = session.get(ACTIVE_ORGANIZATION_SESSION_KEY)
@@ -77,6 +92,7 @@ def get_current_session_state(*, user, session) -> dict:
                 "id": row["organization_id"],
                 "name": row["organization__name"],
                 "role": row["role"],
+                "storeIds": store_scopes[row["id"]],
             }
             for row in rows
         ],

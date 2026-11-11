@@ -124,6 +124,7 @@ REST_FRAMEWORK = {
         "registration": "5/hour",
         "registration_resend": "3/hour",
         "email_confirmation": "10/hour",
+        "invitation": "10/hour",
         "login": "10/minute",
         "mfa": "20/minute",
     },

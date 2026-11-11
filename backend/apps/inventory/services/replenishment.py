@@ -348,6 +348,22 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
                 ),
             })
 
+        cost_ranked_rows = sorted(
+            (
+                row for row in supplier_rows
+                if row["known_merchandise_cost"] is not None
+            ),
+            key=lambda row: (
+                row["known_merchandise_cost"],
+                row["condition"].supplier.name.casefold(),
+                str(row["condition"].supplier_id),
+            ),
+        )
+        cost_ranks = {
+            row["condition"].pk: rank
+            for rank, row in enumerate(cost_ranked_rows, start=1)
+        }
+
         safe_rows = [row for row in supplier_rows if row["predicted_shortage"] == 0]
         at_risk_rows = [row for row in supplier_rows if row["predicted_shortage"] > 0]
         safe_rows.sort(key=lambda row: (
@@ -429,9 +445,24 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
                 "excessOverTarget": _decimal_text(row["excess_over_target"]),
                 "selected": row is selected,
                 "ruptureAvoidanceRank": index,
-                "costRank": None,
+                "costRank": cost_ranks.get(condition.pk),
                 "reasonCodes": reason_codes,
             })
+
+        top_candidate = supplier_rows[0] if supplier_rows else None
+        quantity_needed = (
+            selected["quantity_needed"]
+            if selected is not None
+            else top_candidate["quantity_needed"]
+            if top_candidate is not None
+            else max(Decimal("0"), target_stock - current_stock)
+            if target_stock is not None
+            else None
+        )
+        no_purchase_needed = (
+            top_candidate is not None
+            and top_candidate["quantity_needed"] == 0
+        )
 
         recommendations.append({
             "product": {
@@ -465,7 +496,7 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
                 "source": parameter_source,
             },
             "targetStock": _decimal_text(target_stock),
-            "suggestedQuantity": _decimal_text(selected["quantity_needed"] if selected else None),
+            "suggestedQuantity": _decimal_text(quantity_needed),
             "quantityToOrder": _decimal_text(selected["order_quantity_base"] if selected else None),
             "excessOverTarget": _decimal_text(selected["excess_over_target"] if selected else None),
             "selectedSupplierId": str(selected_id) if selected_id else None,
@@ -474,6 +505,8 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
                 + (["missing_minimum_stock"] if demand is None and minimum_stock is None else [])
                 + (["stockout_before_arrival"] if selected and selected["predicted_shortage"] > 0 else [])
                 + (["partial_cost"] if selected else [])
+                + (["supplier_condition_missing"] if not supplier_rows else [])
+                + (["no_purchase_needed"] if no_purchase_needed else [])
             ),
             "warnings": warnings,
             "supplierComparisons": supplier_comparisons,

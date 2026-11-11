@@ -19,6 +19,8 @@ from rest_framework.views import APIView
 
 from apps.identity.models import Membership
 from apps.identity.permissions import MfaForPrivilegedUsers
+from apps.identity.services.access import StoreAccessDenied, require_store_access
+from apps.identity.services.access import active_store_ids
 from apps.identity.services.organization_context import (
     ActiveOrganizationRequired,
     set_active_organization_rls_context,
@@ -238,6 +240,66 @@ def _organization_and_catalog_reader(request):
     return organization_id, None
 
 
+def _organization_and_scoped_inventory_reader(request):
+    """Return the tenant plus the stores visible to this inventory role."""
+    try:
+        organization_id = set_active_organization_rls_context(
+            user=request.user,
+            session=request._request.session,
+        )
+    except ActiveOrganizationRequired:
+        return None, None, _active_organization_required()
+
+    membership = Membership.objects.filter(
+        organization_id=organization_id,
+        user_id=request.user.pk,
+        status=Membership.Status.ACTIVE,
+    ).first()
+    allowed_roles = {
+        Membership.Role.ADMINISTRATOR,
+        Membership.Role.STORE_MANAGER,
+        Membership.Role.OPERATOR,
+        Membership.Role.BUYER,
+    }
+    if membership is None or membership.role not in allowed_roles:
+        return None, None, _problem(
+            "inventory_access_required",
+            "Seu papel não permite consultar os dados operacionais desta rede.",
+            HTTP_403_FORBIDDEN,
+        )
+    return organization_id, active_store_ids(organization_id=organization_id, membership=membership), None
+
+
+def _organization_and_store_scope(request, store_id, allowed_roles):
+    try:
+        organization_id = set_active_organization_rls_context(
+            user=request.user,
+            session=request._request.session,
+        )
+    except ActiveOrganizationRequired:
+        return None, _active_organization_required()
+    if not Store.objects.filter(
+        organization_id=organization_id,
+        pk=store_id,
+        is_active=True,
+    ).exists():
+        return None, _resource_unavailable()
+    try:
+        require_store_access(
+            organization_id=organization_id,
+            user=request.user,
+            store_id=store_id,
+            allowed_roles=allowed_roles,
+        )
+    except StoreAccessDenied:
+        return None, _problem(
+            "store_access_required",
+            "Você não tem acesso a esta loja nesta rede.",
+            HTTP_403_FORBIDDEN,
+        )
+    return organization_id, None
+
+
 def _store_for_organization(*, organization_id, store_id, lock=False):
     stores = Store.objects.filter(organization_id=organization_id)
     if lock:
@@ -321,7 +383,11 @@ class OrganizationOperationalCalendarVersionView(InventoryAdministratorAPIView):
 class StoreOperationalCalendarVersionView(InventoryAdministratorAPIView):
     def get(self, request, store_id):
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_store_scope(
+                request,
+                store_id,
+                [Membership.Role.STORE_MANAGER, Membership.Role.OPERATOR, Membership.Role.BUYER],
+            )
             if error:
                 return error
             store = _store_for_organization(
@@ -346,7 +412,11 @@ class StoreOperationalCalendarVersionView(InventoryAdministratorAPIView):
         values = serializer.validated_data
 
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_store_scope(
+                request,
+                store_id,
+                [Membership.Role.STORE_MANAGER],
+            )
             if error:
                 return error
             store = _store_for_organization(
@@ -376,12 +446,13 @@ class StoreOperationalCalendarVersionView(InventoryAdministratorAPIView):
 class StoreListCreateView(InventoryAdministratorAPIView):
     def get(self, request):
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, store_ids, error = _organization_and_scoped_inventory_reader(request)
             if error:
                 return error
-            stores = Store.objects.filter(organization_id=organization_id).prefetch_related(
-                "calendar_overrides"
-            ).order_by("name", "id")
+            stores = Store.objects.filter(organization_id=organization_id, is_active=True)
+            if store_ids is not None:
+                stores = stores.filter(pk__in=store_ids)
+            stores = stores.prefetch_related("calendar_overrides").order_by("name", "id")
             return Response(StoreListSerializer({"stores": stores}).data, status=HTTP_200_OK)
 
     def post(self, request):
@@ -430,10 +501,15 @@ class StoreListCreateView(InventoryAdministratorAPIView):
 class ProductListCreateView(InventoryAdministratorAPIView):
     def get(self, request):
         with transaction.atomic():
-            organization_id, error = _organization_and_catalog_reader(request)
+            organization_id, store_ids, error = _organization_and_scoped_inventory_reader(request)
             if error:
                 return error
             products = Product.objects.filter(organization_id=organization_id).select_related("category").order_by("sku", "id")
+            if store_ids is not None:
+                products = products.filter(
+                    store_assortments__store_id__in=store_ids,
+                    store_assortments__store__is_active=True,
+                ).distinct()
             return Response(ProductListSerializer({"products": products}).data, status=HTTP_200_OK)
 
     def post(self, request):
@@ -475,12 +551,18 @@ class ProductListCreateView(InventoryAdministratorAPIView):
 class ProductCategoryListCreateView(InventoryAdministratorAPIView):
     def get(self, request):
         with transaction.atomic():
-            organization_id, error = _organization_and_catalog_reader(request)
+            organization_id, store_ids, error = _organization_and_scoped_inventory_reader(request)
             if error:
                 return error
             categories = ProductCategory.objects.filter(
                 organization_id=organization_id,
-            ).order_by("name", "id")
+            )
+            if store_ids is not None:
+                categories = categories.filter(
+                    products__store_assortments__store_id__in=store_ids,
+                    products__store_assortments__store__is_active=True,
+                ).distinct()
+            categories = categories.order_by("name", "id")
             return Response(
                 {"categories": ProductCategorySerializer(categories, many=True).data},
                 status=HTTP_200_OK,
@@ -527,7 +609,11 @@ def _assortments_overlap(
 class StoreProductAssortmentListCreateView(InventoryAdministratorAPIView):
     def get(self, request, store_id):
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_store_scope(
+                request,
+                store_id,
+                [Membership.Role.STORE_MANAGER, Membership.Role.OPERATOR, Membership.Role.BUYER],
+            )
             if error:
                 return error
             store = _store_for_organization(
@@ -674,7 +760,11 @@ class OpeningStockCountCreateView(InventoryAdministratorAPIView):
 
         try:
             with transaction.atomic():
-                _, error = _organization_and_admin(request)
+                _, error = _organization_and_store_scope(
+                    request,
+                    store_id,
+                    [Membership.Role.STORE_MANAGER],
+                )
                 if error:
                     return error
                 batch, _ = confirm_opening_stock(
@@ -726,7 +816,11 @@ class StoreStockBalanceListView(InventoryAdministratorAPIView):
     def get(self, request, store_id):
         try:
             with transaction.atomic():
-                organization_id, error = _organization_and_admin(request)
+                organization_id, error = _organization_and_store_scope(
+                    request,
+                    store_id,
+                    [Membership.Role.STORE_MANAGER, Membership.Role.OPERATOR, Membership.Role.BUYER],
+                )
                 if error:
                     return error
                 store = _store_for_organization(
@@ -761,7 +855,11 @@ class StoreDailyProductSalesView(InventoryAdministratorAPIView):
 
         try:
             with transaction.atomic():
-                _, error = _organization_and_admin(request)
+                _, error = _organization_and_store_scope(
+                    request,
+                    store_id,
+                    [Membership.Role.STORE_MANAGER, Membership.Role.OPERATOR, Membership.Role.BUYER],
+                )
                 if error:
                     return error
                 store, _opening_batch, sales = list_daily_sales(
@@ -797,7 +895,11 @@ class StoreDailyProductSalesView(InventoryAdministratorAPIView):
 
         try:
             with transaction.atomic():
-                _, error = _organization_and_admin(request)
+                _, error = _organization_and_store_scope(
+                    request,
+                    store_id,
+                    [Membership.Role.STORE_MANAGER, Membership.Role.OPERATOR],
+                )
                 if error:
                     return error
                 sale, created = create_daily_sale(
@@ -854,7 +956,11 @@ class StoreDailySaleCorrectionsView(InventoryAdministratorAPIView):
     def get(self, request, store_id, daily_sale_id):
         try:
             with transaction.atomic():
-                _, error = _organization_and_admin(request)
+                _, error = _organization_and_store_scope(
+                    request,
+                    store_id,
+                    [Membership.Role.STORE_MANAGER, Membership.Role.OPERATOR, Membership.Role.BUYER],
+                )
                 if error:
                     return error
                 sale, corrections = list_sales_corrections(
@@ -884,7 +990,11 @@ class StoreDailySaleCorrectionsView(InventoryAdministratorAPIView):
 
         try:
             with transaction.atomic():
-                _, error = _organization_and_admin(request)
+                _, error = _organization_and_store_scope(
+                    request,
+                    store_id,
+                    [Membership.Role.STORE_MANAGER, Membership.Role.OPERATOR],
+                )
                 if error:
                     return error
                 correction, created = correct_daily_sale(

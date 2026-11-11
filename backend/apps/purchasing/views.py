@@ -6,16 +6,24 @@ from rest_framework.status import (
     HTTP_200_OK,
     HTTP_201_CREATED,
     HTTP_400_BAD_REQUEST,
+    HTTP_403_FORBIDDEN,
     HTTP_409_CONFLICT,
 )
 
 from apps.inventory.services.calendar import OperationalCalendarMissing
+from apps.inventory.models import Store
 from apps.inventory.views import (
     InventoryAdministratorAPIView,
     _organization_and_admin,
     _problem,
     _resource_unavailable,
     _validation_response,
+)
+from apps.identity.models import Membership
+from apps.identity.services.access import StoreAccessDenied, require_store_access
+from apps.identity.services.organization_context import (
+    ActiveOrganizationRequired,
+    set_active_organization_rls_context,
 )
 from apps.purchasing.serializers import (
     PurchaseBudgetPatchSerializer,
@@ -96,10 +104,46 @@ def _purchase_error(exc):
     raise exc
 
 
+def _organization_and_store_access(request, store_id, allowed_roles):
+    try:
+        organization_id = set_active_organization_rls_context(
+            user=request.user,
+            session=request._request.session,
+        )
+    except ActiveOrganizationRequired:
+        return None, _resource_unavailable()
+    if not Store.objects.filter(
+        organization_id=organization_id,
+        pk=store_id,
+        is_active=True,
+    ).exists():
+        return None, _resource_unavailable()
+    try:
+        require_store_access(
+            organization_id=organization_id,
+            user=request.user,
+            store_id=store_id,
+            allowed_roles=allowed_roles,
+        )
+    except StoreAccessDenied:
+        return None, _problem(
+            "store_access_required",
+            "Você não tem acesso a esta loja nesta rede.",
+            HTTP_403_FORBIDDEN,
+        )
+    return organization_id, None
+
+
+STORE_READ_ROLES = [Membership.Role.STORE_MANAGER, Membership.Role.OPERATOR, Membership.Role.BUYER]
+STORE_MANAGER_ROLES = [Membership.Role.STORE_MANAGER]
+STORE_DRAFT_CREATE_ROLES = [Membership.Role.STORE_MANAGER, Membership.Role.BUYER]
+STORE_RECEIPT_ROLES = [Membership.Role.STORE_MANAGER, Membership.Role.OPERATOR]
+
+
 class StorePurchaseOrderListCreateView(InventoryAdministratorAPIView):
     def get(self, request, store_id):
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_store_access(request, store_id, STORE_READ_ROLES)
             if error:
                 return error
             try:
@@ -112,7 +156,7 @@ class StorePurchaseOrderListCreateView(InventoryAdministratorAPIView):
         if not serializer.is_valid():
             return _validation_response(serializer.errors)
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_store_access(request, store_id, STORE_DRAFT_CREATE_ROLES)
             if error:
                 return error
             try:
@@ -130,7 +174,7 @@ class StorePurchaseOrderListCreateView(InventoryAdministratorAPIView):
 class PurchaseOrderDetailView(InventoryAdministratorAPIView):
     def get(self, request, store_id, order_id):
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_store_access(request, store_id, STORE_READ_ROLES)
             if error:
                 return error
             try:
@@ -149,7 +193,7 @@ class PurchaseOrderDetailView(InventoryAdministratorAPIView):
         if not serializer.is_valid():
             return _validation_response(serializer.errors)
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_store_access(request, store_id, STORE_MANAGER_ROLES)
             if error:
                 return error
             try:
@@ -171,7 +215,7 @@ class PurchaseOrderReviewView(InventoryAdministratorAPIView):
         if request.data not in ({}, None):
             return _validation_response({"non_field_errors": ["A revisão não recebe campos."]})
         with transaction.atomic():
-            _, error = _organization_and_admin(request)
+            _, error = _organization_and_store_access(request, store_id, STORE_DRAFT_CREATE_ROLES)
             if error:
                 return error
             try:
@@ -189,7 +233,7 @@ class PurchaseOrderApproveView(InventoryAdministratorAPIView):
         if not serializer.is_valid():
             return _validation_response(serializer.errors)
         with transaction.atomic():
-            _, error = _organization_and_admin(request)
+            _, error = _organization_and_store_access(request, store_id, STORE_MANAGER_ROLES)
             if error:
                 return error
             try:
@@ -216,7 +260,7 @@ class PurchaseOrderApproveView(InventoryAdministratorAPIView):
 class PurchaseOrderReceiptListCreateView(InventoryAdministratorAPIView):
     def get(self, request, store_id, order_id):
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_store_access(request, store_id, STORE_READ_ROLES)
             if error:
                 return error
             try:
@@ -238,7 +282,7 @@ class PurchaseOrderReceiptListCreateView(InventoryAdministratorAPIView):
         if not serializer.is_valid():
             return _validation_response(serializer.errors)
         with transaction.atomic():
-            _, error = _organization_and_admin(request)
+            _, error = _organization_and_store_access(request, store_id, STORE_RECEIPT_ROLES)
             if error:
                 return error
             try:
@@ -269,7 +313,7 @@ class PurchaseOrderCancelRemainingView(InventoryAdministratorAPIView):
         if not serializer.is_valid():
             return _validation_response(serializer.errors)
         with transaction.atomic():
-            _, error = _organization_and_admin(request)
+            _, error = _organization_and_store_access(request, store_id, STORE_MANAGER_ROLES)
             if error:
                 return error
             try:
@@ -287,7 +331,10 @@ class PurchaseOrderCancelRemainingView(InventoryAdministratorAPIView):
 class PurchaseBudgetSettingsView(InventoryAdministratorAPIView):
     def get(self, request, store_id=None):
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            if store_id is None:
+                organization_id, error = _organization_and_admin(request)
+            else:
+                organization_id, error = _organization_and_store_access(request, store_id, STORE_READ_ROLES)
             if error:
                 return error
             try:

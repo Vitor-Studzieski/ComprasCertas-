@@ -4,7 +4,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
-from apps.identity.models import User, normalize_email_address
+from apps.identity.models import Membership, OrganizationInvitation, User, normalize_email_address
 
 
 class RegistrationSerializer(serializers.Serializer):
@@ -57,3 +57,54 @@ class WebAuthnVerificationSerializer(PreAuthChallengeSerializer):
 
 class RecoveryCodeSerializer(PreAuthChallengeSerializer):
     recoveryCode = serializers.CharField(min_length=1, max_length=64, write_only=True, trim_whitespace=True)
+
+
+class MembershipStoreScopeRequestSerializer(serializers.Serializer):
+    storeIds = serializers.ListField(
+        child=serializers.UUIDField(),
+        allow_empty=True,
+        max_length=500,
+    )
+
+    def validate_storeIds(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError("Cada loja pode aparecer uma única vez.")
+        return value
+
+
+class MembershipRoleUpdateRequestSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=Membership.Role.choices)
+    storeIds = serializers.ListField(
+        child=serializers.UUIDField(),
+        allow_empty=True,
+        max_length=500,
+    )
+
+    def validate_storeIds(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError("Cada loja pode aparecer uma única vez.")
+        return value
+
+
+class InvitationCreateSerializer(serializers.Serializer):
+    email = serializers.EmailField(max_length=254)
+    role = serializers.ChoiceField(choices=OrganizationInvitation.Role.choices)
+    storeIds = serializers.ListField(
+        child=serializers.UUIDField(),
+        allow_empty=True,
+        max_length=500,
+    )
+
+    def validate_storeIds(self, value):
+        if len(value) != len(set(value)):
+            raise serializers.ValidationError("Cada loja pode aparecer uma única vez.")
+        return value
+
+
+class InvitationTokenSerializer(serializers.Serializer):
+    token = serializers.CharField(min_length=32, max_length=128, trim_whitespace=True)
+
+
+class InvitationAcceptSerializer(InvitationTokenSerializer):
+    fullName = serializers.CharField(min_length=2, max_length=160, required=False, trim_whitespace=True)
+    password = serializers.CharField(min_length=1, max_length=256, required=False, write_only=True, trim_whitespace=False)
