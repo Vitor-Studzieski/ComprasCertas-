@@ -4,6 +4,7 @@ type ApiProblem = {
   code?: string;
   message?: string;
   fields?: Record<string, string[]>;
+  preview?: unknown;
 };
 
 let csrfToken: string | null = null;
@@ -12,6 +13,7 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
   readonly fields?: Record<string, string[]>;
+  readonly preview?: unknown;
 
   constructor(status: number, problem: ApiProblem) {
     super(problem.message || 'Não foi possível concluir a solicitação.');
@@ -19,6 +21,7 @@ export class ApiError extends Error {
     this.status = status;
     this.code = problem.code;
     this.fields = problem.fields;
+    this.preview = problem.preview;
   }
 }
 
@@ -57,6 +60,19 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
       'X-CSRFToken': token,
     },
     body: JSON.stringify(body),
+  });
+
+  if (!response.ok) throw new ApiError(response.status, await readProblem(response));
+  return await response.json() as T;
+}
+
+export async function apiPostFormData<T>(path: string, body: FormData): Promise<T> {
+  const token = csrfToken || await loadCsrfToken();
+  const response = await fetch(`${API_ROOT}${path}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'X-CSRFToken': token },
+    body,
   });
 
   if (!response.ok) throw new ApiError(response.status, await readProblem(response));

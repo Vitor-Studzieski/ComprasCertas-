@@ -10,7 +10,7 @@ type RegistrationForm = {
   password: string;
 };
 
-type Screen = 'register' | 'pending' | 'confirming' | 'login' | 'enrollment' | 'mfa' | 'recovery-codes' | 'organization-selection' | 'no-memberships' | 'authenticated';
+type Screen = 'register' | 'pending' | 'confirming' | 'accept-invitation' | 'login' | 'enrollment' | 'mfa' | 'recovery-codes' | 'organization-selection' | 'no-memberships' | 'authenticated';
 type OrganizationMembership = {
   id: string;
   name: string;
@@ -26,6 +26,20 @@ type LoginResponse = {
   challengeId?: string;
   methods?: Array<'webauthn' | 'recovery_code'>;
 };
+type InvitationPreview = {
+  organizationName: string;
+  email: string;
+  role: string;
+  roleName: string;
+  storeNames: string[];
+  expiresAt: string;
+};
+type InvitationAcceptResponse = {
+  status: 'accepted' | 'second_factor_required' | 'second_factor_enrollment_required';
+  challengeId?: string;
+  organizationId?: string;
+  methods?: Array<'webauthn' | 'recovery_code'>;
+};
 
 const emptyForm: RegistrationForm = {
   organizationName: '',
@@ -35,7 +49,10 @@ const emptyForm: RegistrationForm = {
 };
 
 function initialScreen(): Screen {
-  return window.location.pathname.replace(/\/$/, '') === '/confirm-email' ? 'confirming' : 'register';
+  const path = window.location.pathname.replace(/\/$/, '');
+  if (path === '/confirm-email') return 'confirming';
+  if (path === '/accept-invitation') return 'accept-invitation';
+  return 'register';
 }
 
 function errorMessage(error: unknown): string {
@@ -67,6 +84,13 @@ export default function App() {
   const confirmationStarted = useRef(false);
   const hasInteracted = useRef(false);
   const [loginSessionConflict, setLoginSessionConflict] = useState(false);
+  const [invitationToken, setInvitationToken] = useState('');
+  const [invitationPreview, setInvitationPreview] = useState<InvitationPreview | null>(null);
+  const [invitationFullName, setInvitationFullName] = useState('');
+  const [invitationPassword, setInvitationPassword] = useState('');
+  const [hasInvitationSession, setHasInvitationSession] = useState(false);
+  const [acceptInvitationAfterLogin, setAcceptInvitationAfterLogin] = useState(false);
+  const [pendingInvitationOrganizationId, setPendingInvitationOrganizationId] = useState('');
 
   function applySessionContext(context: CurrentSessionResponse) {
     const activeMembership = context.organizations.find(
@@ -95,6 +119,74 @@ export default function App() {
     return context;
   }
 
+  async function finishAuthenticatedSession(organizationId = '') {
+    await refreshCsrfToken();
+    let context = await apiGet<CurrentSessionResponse>('/sessions/current/');
+    if (
+      organizationId
+      && context.organizations.some((organization) => organization.id === organizationId)
+      && context.activeOrganizationId !== organizationId
+    ) {
+      context = await apiPut<CurrentSessionResponse>(
+        '/sessions/current/organization/',
+        { organizationId },
+      );
+    }
+    setHasInvitationSession(true);
+    setAcceptInvitationAfterLogin(false);
+    setPendingInvitationOrganizationId('');
+    setInvitationPassword('');
+    window.history.replaceState(null, '', `${window.location.origin}/`);
+    applySessionContext(context);
+  }
+
+  async function acceptInvitationToken(account?: { fullName?: string; password?: string }) {
+    const result = await apiPost<InvitationAcceptResponse>('/invitations/accept/', {
+      token: invitationToken,
+      ...(account?.fullName ? { fullName: account.fullName } : {}),
+      ...(account?.password ? { password: account.password } : {}),
+    });
+    if (result.status === 'second_factor_required' || result.status === 'second_factor_enrollment_required') {
+      setPendingInvitationOrganizationId(result.organizationId ?? '');
+      setChallengeId(result.challengeId ?? '');
+      setMethods(result.methods ?? []);
+      setShowRecoveryInput(false);
+      setAcceptInvitationAfterLogin(false);
+      setInvitationPassword('');
+      setScreen(result.status === 'second_factor_enrollment_required' ? 'enrollment' : 'mfa');
+      return;
+    }
+    setNotice('Convite aceito. Carregando sua rede…');
+    await finishAuthenticatedSession(result.organizationId ?? '');
+  }
+
+  async function submitInvitationAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await acceptInvitationToken({ fullName: invitationFullName, password: invitationPassword });
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitExistingAccountInvitation() {
+    setBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      await acceptInvitationToken();
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (previousScreen.current !== screen) panelHeading.current?.focus();
     previousScreen.current = screen;
@@ -103,13 +195,37 @@ export default function App() {
   useEffect(() => {
     if (window.location.pathname.replace(/\/$/, '') === '/confirm-email') return;
     let cancelled = false;
+    const isInvitationRoute = window.location.pathname.replace(/\/$/, '') === '/accept-invitation';
     apiGet<CurrentSessionResponse>('/sessions/current/')
       .then((context) => {
-        if (!cancelled && !hasInteracted.current) applySessionContext(context);
+        if (cancelled || hasInteracted.current) return;
+        if (isInvitationRoute) {
+          setOrganizations(context.organizations);
+          setActiveOrganizationId(context.activeOrganizationId);
+          setHasInvitationSession(true);
+          return;
+        }
+        applySessionContext(context);
       })
       .catch(() => {});
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (screen !== 'accept-invitation' || invitationToken) return;
+    const token = new URLSearchParams(window.location.hash.slice(1)).get('token');
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    if (!token) {
+      setError('O link não contém um token de convite. Peça ao administrador para reenviá-lo.');
+      return;
+    }
+    setInvitationToken(token);
+    let cancelled = false;
+    apiPost<InvitationPreview>('/invitations/preview/', { token })
+      .then((preview) => { if (!cancelled) setInvitationPreview(preview); })
+      .catch((requestError: unknown) => { if (!cancelled) setError(errorMessage(requestError)); });
+    return () => { cancelled = true; };
+  }, [invitationToken, screen]);
 
   useEffect(() => {
     if (screen !== 'confirming' || confirmationStarted.current) return;
@@ -190,8 +306,13 @@ export default function App() {
       const result = await apiPost<LoginResponse>('/sessions/', { email, password });
       setPassword('');
       if (result.status === 'authenticated') {
-        await refreshCsrfToken();
-        await loadSessionContext();
+        if (acceptInvitationAfterLogin && invitationToken) {
+          await refreshCsrfToken();
+          await acceptInvitationToken();
+        } else {
+          await refreshCsrfToken();
+          await loadSessionContext();
+        }
       } else {
         setChallengeId(result.challengeId ?? '');
         setMethods(result.methods ?? []);
@@ -241,8 +362,12 @@ export default function App() {
       );
       const credential = await getWebAuthnAssertion(options);
       await apiPost('/sessions/mfa/authentication/verify/', { challengeId, credential });
-      await refreshCsrfToken();
-      await loadSessionContext();
+      if (acceptInvitationAfterLogin && invitationToken) {
+        await refreshCsrfToken();
+        await acceptInvitationToken();
+      } else {
+        await finishAuthenticatedSession(pendingInvitationOrganizationId);
+      }
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -256,9 +381,13 @@ export default function App() {
     setError('');
     try {
       await apiPost('/sessions/mfa/recovery-code/', { challengeId, recoveryCode });
-      await refreshCsrfToken();
       setRecoveryCode('');
-      await loadSessionContext();
+      if (acceptInvitationAfterLogin && invitationToken) {
+        await refreshCsrfToken();
+        await acceptInvitationToken();
+      } else {
+        await finishAuthenticatedSession(pendingInvitationOrganizationId);
+      }
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -276,6 +405,7 @@ export default function App() {
       setOrganizations([]);
       setActiveOrganizationId(null);
       setPendingOrganizationId('');
+      setHasInvitationSession(false);
       setScreen('login');
       setNotice('Você saiu da sua conta.');
     } catch (requestError) {
@@ -311,7 +441,11 @@ export default function App() {
     setBusy(true);
     setError('');
     try {
-      await loadSessionContext();
+      if (acceptInvitationAfterLogin && invitationToken) {
+        await acceptInvitationToken();
+      } else {
+        await finishAuthenticatedSession(pendingInvitationOrganizationId);
+      }
       setRecoveryCodes([]);
     } catch (requestError) {
       setError(errorMessage(requestError));
@@ -331,6 +465,7 @@ export default function App() {
     register: 'Crie sua conta',
     pending: 'Confirme seu e-mail',
     confirming: 'Confirmando seu e-mail',
+    'accept-invitation': 'Aceite seu convite',
     login: 'Entre na sua conta',
     enrollment: 'Proteja sua conta',
     mfa: 'Confirme sua identidade',
@@ -411,6 +546,42 @@ export default function App() {
 
         {screen === 'confirming' && <p className="sending-status" role="status">Validando o link de confirmação…</p>}
 
+        {screen === 'accept-invitation' && (
+          <div className="confirmation-state invitation-acceptance-state">
+            {!invitationPreview ? (
+              <p className="sending-status" role="status">Validando o convite…</p>
+            ) : (
+              <>
+                <div className="confirmation-symbol" aria-hidden="true">✓</div>
+                <p className="confirmation-copy">Você foi convidado(a) para acessar a rede <strong>{invitationPreview.organizationName}</strong>.</p>
+                <dl className="invitation-summary">
+                  <div><dt>Papel</dt><dd>{invitationPreview.roleName}</dd></div>
+                  <div><dt>Lojas</dt><dd>{invitationPreview.role === 'administrator' ? 'Toda a rede' : invitationPreview.storeNames.join(', ')}</dd></div>
+                  <div><dt>Convite válido até</dt><dd>{new Intl.DateTimeFormat('pt-BR', { dateStyle: 'medium' }).format(new Date(invitationPreview.expiresAt))}</dd></div>
+                </dl>
+                {hasInvitationSession ? (
+                  <>
+                    <button className="submit-button" disabled={busy} onClick={() => void submitExistingAccountInvitation()} type="button">{busy ? 'Aceitando…' : 'Aceitar com a conta atual'}</button>
+                    <button className="secondary-button" disabled={busy} onClick={() => { setAcceptInvitationAfterLogin(true); setEmail(invitationPreview.email); void signOut(); }} type="button">Entrar com outra conta</button>
+                  </>
+                ) : (
+                  <>
+                    <form className="registration-form" onSubmit={submitInvitationAccount} aria-busy={busy}>
+                      <label htmlFor="invitationFullName">Seu nome</label>
+                      <input autoComplete="name" disabled={busy} id="invitationFullName" maxLength={160} minLength={2} onChange={(event) => setInvitationFullName(event.target.value)} required value={invitationFullName} />
+                      <label htmlFor="invitationPassword">Crie uma senha</label>
+                      <input autoComplete="new-password" disabled={busy} id="invitationPassword" maxLength={256} onChange={(event) => setInvitationPassword(event.target.value)} required type="password" value={invitationPassword} />
+                      <p className="field-hint">O convite confirma este e-mail. Gerentes, compradores e administradores configuram uma passkey antes de acessar a rede.</p>
+                      <button className="submit-button" disabled={busy} type="submit">{busy ? 'Criando acesso…' : 'Criar conta e aceitar'}</button>
+                    </form>
+                    <p className="login-prompt">Já tem uma conta? <button className="text-button" onClick={() => { setAcceptInvitationAfterLogin(true); setEmail(invitationPreview.email); goTo('login'); }} type="button">Entrar e aceitar o convite</button></p>
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
         {screen === 'login' && (
           <form className="registration-form" onSubmit={submitLogin} aria-busy={busy}>
             <label htmlFor="loginEmail">E-mail</label>
@@ -419,6 +590,7 @@ export default function App() {
             <input autoComplete="current-password" disabled={busy} id="loginPassword" onChange={(event) => setPassword(event.target.value)} required type="password" value={password} />
             <button className="submit-button" disabled={busy} type="submit">{busy ? 'Entrando...' : 'Entrar'}</button>
             {loginSessionConflict && <button className="secondary-button" disabled={busy} onClick={signOut} type="button">Encerrar sessão atual</button>}
+            {acceptInvitationAfterLogin && <button className="text-button standalone-link" disabled={busy} onClick={() => { setAcceptInvitationAfterLogin(false); setScreen('accept-invitation'); }} type="button">Voltar ao convite</button>}
             <p className="login-prompt">Ainda não tem conta? <button className="text-button" onClick={() => goTo('register')} type="button">Criar conta</button></p>
           </form>
         )}
