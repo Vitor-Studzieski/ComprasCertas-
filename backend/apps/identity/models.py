@@ -147,6 +147,223 @@ class Membership(models.Model):
         return f"{self.user_id}:{self.organization_id}:{self.role}"
 
 
+class StoreAccessAssignment(models.Model):
+    """Auditable access for a non-administrator membership to one store."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.PROTECT,
+        related_name="store_access_assignments",
+    )
+    membership = models.ForeignKey(
+        Membership,
+        on_delete=models.PROTECT,
+        related_name="store_assignments",
+    )
+    store = models.ForeignKey(
+        "inventory.Store",
+        on_delete=models.PROTECT,
+        related_name="access_assignments",
+    )
+    assigned_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="store_access_assignments_created",
+    )
+    assigned_at = models.DateTimeField(default=timezone.now, editable=False)
+    revoked_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="store_access_assignments_revoked",
+        null=True,
+        blank=True,
+    )
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "identity_store_access_assignment"
+        ordering = ["organization_id", "membership_id", "store_id", "assigned_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "membership", "store"],
+                condition=models.Q(revoked_at__isnull=True),
+                name="identity_store_access_active_unique",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(revoked_at__isnull=True, revoked_by__isnull=True)
+                    | models.Q(revoked_at__isnull=False, revoked_by__isnull=False)
+                ),
+                name="identity_store_access_revocation_actor_valid",
+            ),
+        ]
+
+
+class OrganizationInvitation(models.Model):
+    """Single-use email invitation to join one tenant with a role and store scope."""
+
+    class Role(models.TextChoices):
+        ADMINISTRATOR = Membership.Role.ADMINISTRATOR, "Administrador da rede"
+        STORE_MANAGER = Membership.Role.STORE_MANAGER, "Gerente de loja"
+        OPERATOR = Membership.Role.OPERATOR, "Operador"
+        BUYER = Membership.Role.BUYER, "Comprador/aprovador"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.PROTECT,
+        related_name="invitations",
+    )
+    email = models.EmailField(max_length=254)
+    role = models.CharField(max_length=24, choices=Role.choices)
+    token_hash = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField()
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="organization_invitations_created",
+    )
+    accepted_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="organization_invitations_accepted",
+        null=True,
+        blank=True,
+    )
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="organization_invitations_revoked",
+        null=True,
+        blank=True,
+    )
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    sent_count = models.PositiveSmallIntegerField(default=1)
+    last_sent_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    stores = models.ManyToManyField(
+        "inventory.Store",
+        through="OrganizationInvitationStoreScope",
+        related_name="organization_invitations",
+    )
+
+    class Meta:
+        db_table = "identity_organization_invitation"
+        ordering = ["-created_at", "id"]
+        indexes = [
+            models.Index(fields=["organization", "email"], name="identity_inv_org_email_idx"),
+            models.Index(fields=["expires_at"], name="identity_inv_expiry_idx"),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(accepted_at__isnull=True, accepted_by__isnull=True)
+                    | models.Q(accepted_at__isnull=False, accepted_by__isnull=False)
+                ),
+                name="identity_inv_accept_actor_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(revoked_at__isnull=True, revoked_by__isnull=True)
+                    | models.Q(revoked_at__isnull=False, revoked_by__isnull=False)
+                ),
+                name="identity_inv_revoke_actor_valid",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.email = normalize_email_address(self.email)
+        return super().save(*args, **kwargs)
+
+    @property
+    def status(self) -> str:
+        if self.accepted_at is not None:
+            return "accepted"
+        if self.revoked_at is not None:
+            return "revoked"
+        if self.expires_at <= timezone.now():
+            return "expired"
+        return "pending"
+
+
+class OrganizationInvitationStoreScope(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.PROTECT,
+        related_name="invitation_store_scopes",
+    )
+    invitation = models.ForeignKey(
+        OrganizationInvitation,
+        on_delete=models.PROTECT,
+        related_name="store_scopes",
+    )
+    store = models.ForeignKey(
+        "inventory.Store",
+        on_delete=models.PROTECT,
+        related_name="invitation_scopes",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        db_table = "identity_invitation_store_scope"
+        ordering = ["invitation_id", "store_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "invitation", "store"],
+                name="identity_inv_scope_unique",
+            ),
+        ]
+
+
+class MembershipAccessEvent(models.Model):
+    """Immutable audit of access changes and invitation lifecycle events."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.PROTECT,
+        related_name="membership_access_events",
+    )
+    membership = models.ForeignKey(
+        Membership,
+        on_delete=models.PROTECT,
+        related_name="access_events",
+        null=True,
+        blank=True,
+    )
+    invitation = models.ForeignKey(
+        OrganizationInvitation,
+        on_delete=models.PROTECT,
+        related_name="access_events",
+        null=True,
+        blank=True,
+    )
+    actor = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="membership_access_events_created",
+    )
+    event_type = models.CharField(max_length=32)
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        db_table = "identity_membership_access_event"
+        ordering = ["created_at", "id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(membership__isnull=False, invitation__isnull=True)
+                    | models.Q(membership__isnull=True, invitation__isnull=False)
+                ),
+                name="identity_access_event_one_subject",
+            ),
+        ]
+
+
 class Trial(models.Model):
     """The one-time 30-day product trial created at email confirmation."""
 

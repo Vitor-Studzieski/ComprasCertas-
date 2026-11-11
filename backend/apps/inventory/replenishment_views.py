@@ -10,6 +10,7 @@ from rest_framework.status import (
     HTTP_409_CONFLICT,
 )
 
+from apps.identity.models import Membership
 from apps.inventory.models import (
     DailySalesCoverage,
     DailyStockAvailability,
@@ -32,6 +33,7 @@ from apps.inventory.views import (
     InventoryAdministratorAPIView,
     _organization_and_admin,
     _organization_and_catalog_reader,
+    _organization_and_store_scope,
     _problem,
     _resource_unavailable,
     _validation_response,
@@ -180,7 +182,11 @@ class ReplenishmentPolicyView(InventoryAdministratorAPIView):
 class StoreReplenishmentRecommendationsView(InventoryAdministratorAPIView):
     def get(self, request, store_id):
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_store_scope(
+                request,
+                store_id,
+                [Membership.Role.STORE_MANAGER, Membership.Role.BUYER],
+            )
             if error:
                 return error
             store = _store_for_org(organization_id, store_id)
@@ -210,7 +216,11 @@ class StoreReplenishmentRecommendationsView(InventoryAdministratorAPIView):
 class StoreSalesCoverageView(InventoryAdministratorAPIView):
     def get(self, request, store_id):
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_store_scope(
+                request,
+                store_id,
+                [Membership.Role.STORE_MANAGER, Membership.Role.OPERATOR, Membership.Role.BUYER],
+            )
             if error:
                 return error
             store = _store_for_org(organization_id, store_id)
@@ -227,7 +237,11 @@ class StoreSalesCoverageView(InventoryAdministratorAPIView):
         if not serializer.is_valid():
             return _validation_response(serializer.errors)
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_store_scope(
+                request,
+                store_id,
+                [Membership.Role.STORE_MANAGER, Membership.Role.OPERATOR],
+            )
             if error:
                 return error
             store = _store_for_org(organization_id, store_id)
@@ -271,7 +285,11 @@ class StoreSalesCoverageView(InventoryAdministratorAPIView):
 class StoreOutOfStockDaysView(InventoryAdministratorAPIView):
     def get(self, request, store_id):
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_store_scope(
+                request,
+                store_id,
+                [Membership.Role.STORE_MANAGER, Membership.Role.OPERATOR, Membership.Role.BUYER],
+            )
             if error:
                 return error
             store = _store_for_org(organization_id, store_id)
@@ -288,7 +306,11 @@ class StoreOutOfStockDaysView(InventoryAdministratorAPIView):
         if not serializer.is_valid():
             return _validation_response(serializer.errors)
         with transaction.atomic():
-            organization_id, error = _organization_and_admin(request)
+            organization_id, error = _organization_and_store_scope(
+                request,
+                store_id,
+                [Membership.Role.STORE_MANAGER, Membership.Role.OPERATOR],
+            )
             if error:
                 return error
             store = _store_for_org(organization_id, store_id)

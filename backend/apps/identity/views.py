@@ -1,6 +1,7 @@
 """Identity API endpoints."""
 
 from django.contrib.auth import login, logout
+from django.db import IntegrityError, transaction
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -8,14 +9,27 @@ from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from rest_framework.exceptions import Throttled
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.status import HTTP_401_UNAUTHORIZED, HTTP_404_NOT_FOUND
+from rest_framework.status import (
+    HTTP_200_OK,
+    HTTP_201_CREATED,
+    HTTP_400_BAD_REQUEST,
+    HTTP_401_UNAUTHORIZED,
+    HTTP_403_FORBIDDEN,
+    HTTP_404_NOT_FOUND,
+    HTTP_409_CONFLICT,
+)
 from rest_framework.views import APIView
 
-from apps.identity.models import normalize_email_address
+from apps.identity.models import Membership, normalize_email_address
 from apps.identity.permissions import MfaForPrivilegedUsers
 from apps.identity.serializers import (
     EmailConfirmationSerializer,
+    InvitationAcceptSerializer,
+    InvitationCreateSerializer,
+    InvitationTokenSerializer,
     LoginSerializer,
+    MembershipRoleUpdateRequestSerializer,
+    MembershipStoreScopeRequestSerializer,
     OrganizationSelectionSerializer,
     PreAuthChallengeSerializer,
     RecoveryCodeSerializer,
@@ -33,9 +47,23 @@ from apps.identity.services.mfa import (
     verify_recovery_code,
 )
 from apps.identity.services.organization_context import (
+    ActiveOrganizationRequired,
     get_current_session_state,
     select_active_organization,
     select_sole_active_organization,
+)
+from apps.identity.services.invitations import (
+    AccessFlowError,
+    accept_invitation,
+    create_invitation,
+    list_invitations,
+    list_memberships,
+    preview_invitation,
+    replace_membership_store_scope,
+    resend_invitation,
+    revoke_invitation,
+    revoke_membership,
+    update_membership_role,
 )
 from apps.identity.services.registration import (
     InvalidRegistrationToken,
@@ -390,3 +418,236 @@ class CurrentSessionOrganizationView(IdentityAPIView):
         return Response(
             get_current_session_state(user=request.user, session=request._request.session)
         )
+
+
+def _identity_admin_context(request):
+    try:
+        organization_id = set_active_organization_rls_context(
+            user=request.user,
+            session=request._request.session,
+        )
+    except ActiveOrganizationRequired:
+        return None, Response(
+            {"code": "active_organization_required", "message": "Selecione uma rede ativa."},
+            status=HTTP_404_NOT_FOUND,
+        )
+    is_admin = Membership.objects.filter(
+        organization_id=organization_id,
+        user_id=request.user.pk,
+        status=Membership.Status.ACTIVE,
+        role=Membership.Role.ADMINISTRATOR,
+    ).exists()
+    if not is_admin:
+        return None, Response(
+            {"code": "administrator_required", "message": "Esta operação exige o administrador da rede."},
+            status=HTTP_403_FORBIDDEN,
+        )
+    return organization_id, None
+
+
+def _access_flow_error(exc):
+    return Response(
+        {"code": exc.code, "message": exc.message},
+        status=exc.status,
+    )
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class CurrentOrganizationMembershipsView(IdentityAPIView):
+    permission_classes = [MfaForPrivilegedUsers]
+
+    def get(self, request):
+        with transaction.atomic():
+            _, error = _identity_admin_context(request)
+            if error:
+                return error
+            return Response(list_memberships(request=request), status=HTTP_200_OK)
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class CurrentOrganizationInvitationsView(IdentityAPIView):
+    permission_classes = [MfaForPrivilegedUsers]
+
+    def get(self, request):
+        with transaction.atomic():
+            _, error = _identity_admin_context(request)
+            if error:
+                return error
+            return Response(list_invitations(request=request), status=HTTP_200_OK)
+
+    def post(self, request):
+        serializer = InvitationCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+        with transaction.atomic():
+            _, error = _identity_admin_context(request)
+            if error:
+                return error
+            try:
+                invitation = create_invitation(
+                    request=request,
+                    email=serializer.validated_data["email"],
+                    role=serializer.validated_data["role"],
+                    store_ids=serializer.validated_data["storeIds"],
+                )
+            except AccessFlowError as exc:
+                return _access_flow_error(exc)
+            except IntegrityError:
+                return Response(
+                    {"code": "invitation_conflict", "message": "O convite mudou durante a operação."},
+                    status=HTTP_409_CONFLICT,
+                )
+            return Response(invitation, status=HTTP_201_CREATED)
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class InvitationResendView(IdentityAPIView):
+    permission_classes = [MfaForPrivilegedUsers]
+
+    def post(self, request, invitation_id):
+        if request.data not in ({}, None):
+            return _validation_response({"non_field_errors": ["O reenvio não recebe campos."]})
+        with transaction.atomic():
+            _, error = _identity_admin_context(request)
+            if error:
+                return error
+            try:
+                return Response(resend_invitation(request=request, invitation_id=invitation_id))
+            except AccessFlowError as exc:
+                return _access_flow_error(exc)
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class InvitationRevokeView(IdentityAPIView):
+    permission_classes = [MfaForPrivilegedUsers]
+
+    def post(self, request, invitation_id):
+        if request.data not in ({}, None):
+            return _validation_response({"non_field_errors": ["A revogação não recebe campos."]})
+        with transaction.atomic():
+            _, error = _identity_admin_context(request)
+            if error:
+                return error
+            try:
+                return Response(revoke_invitation(request=request, invitation_id=invitation_id))
+            except AccessFlowError as exc:
+                return _access_flow_error(exc)
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class MembershipStoreScopeView(IdentityAPIView):
+    permission_classes = [MfaForPrivilegedUsers]
+
+    def put(self, request, membership_id):
+        serializer = MembershipStoreScopeRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+        with transaction.atomic():
+            _, error = _identity_admin_context(request)
+            if error:
+                return error
+            try:
+                membership = replace_membership_store_scope(
+                    request=request,
+                    membership_id=membership_id,
+                    store_ids=serializer.validated_data["storeIds"],
+                )
+            except AccessFlowError as exc:
+                return _access_flow_error(exc)
+            return Response(membership, status=HTTP_200_OK)
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class MembershipRoleView(IdentityAPIView):
+    permission_classes = [MfaForPrivilegedUsers]
+
+    def put(self, request, membership_id):
+        serializer = MembershipRoleUpdateRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+        with transaction.atomic():
+            _, error = _identity_admin_context(request)
+            if error:
+                return error
+            try:
+                membership = update_membership_role(
+                    request=request,
+                    membership_id=membership_id,
+                    role=serializer.validated_data["role"],
+                    store_ids=serializer.validated_data["storeIds"],
+                )
+            except AccessFlowError as exc:
+                return _access_flow_error(exc)
+            except IntegrityError:
+                return Response(
+                    {"code": "membership_role_conflict", "message": "A associação mudou durante a operação."},
+                    status=HTTP_409_CONFLICT,
+                )
+            return Response(membership, status=HTTP_200_OK)
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class MembershipRevokeView(IdentityAPIView):
+    permission_classes = [MfaForPrivilegedUsers]
+
+    def post(self, request, membership_id):
+        if request.data not in ({}, None):
+            return _validation_response({"non_field_errors": ["A remoção não recebe campos."]})
+        with transaction.atomic():
+            _, error = _identity_admin_context(request)
+            if error:
+                return error
+            try:
+                membership = revoke_membership(request=request, membership_id=membership_id)
+            except AccessFlowError as exc:
+                return _access_flow_error(exc)
+            return Response(membership, status=HTTP_200_OK)
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class InvitationPreviewView(IdentityAPIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [IdentityScopedRateThrottle]
+    throttle_scope = "invitation"
+
+    def post(self, request):
+        serializer = InvitationTokenSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+        try:
+            with transaction.atomic():
+                return Response(
+                    preview_invitation(token=serializer.validated_data["token"]),
+                    status=HTTP_200_OK,
+                )
+        except AccessFlowError as exc:
+            return _access_flow_error(exc)
+
+
+@method_decorator(csrf_protect, name="dispatch")
+class InvitationAcceptView(IdentityAPIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [IdentityScopedRateThrottle]
+    throttle_scope = "invitation"
+
+    def post(self, request):
+        serializer = InvitationAcceptSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+        try:
+            with transaction.atomic():
+                result = accept_invitation(
+                    request=request,
+                    token=serializer.validated_data["token"],
+                    full_name=serializer.validated_data.get("fullName", ""),
+                    password=serializer.validated_data.get("password", ""),
+                )
+        except AccessFlowError as exc:
+            return _access_flow_error(exc)
+        except IntegrityError:
+            return Response(
+                {"code": "invitation_conflict", "message": "O convite já foi aceito ou não pode ser aplicado."},
+                status=HTTP_409_CONFLICT,
+            )
+        return Response(result, status=HTTP_200_OK)
