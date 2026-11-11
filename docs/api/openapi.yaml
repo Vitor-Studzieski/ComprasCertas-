@@ -35,8 +35,14 @@ info:
     purchase review and approval, partial receipts, and receipt-cost
     reconciliation are covered by the current purchasing contract. Approved
     orders can be printed or saved as PDF and downloaded as .xlsx from the web
-    client. Offline synchronization, subscription checkout, and external
-    connectors remain in subsequent MVP cycles.
+    client. Spreadsheet imports accept exact downloadable CSV/XLSX templates;
+    CSV uses UTF-8, semicolon separators, comma decimals, and DD/MM/YYYY dates.
+    The server validates the whole file, returns a preview, and writes only
+    after an explicit confirmation that revalidates affected records inside an
+    atomic transaction. A stale preview returns an updated preview and
+    requires confirmation again. Invalid rows prevent the entire import.
+    Offline synchronization, subscription checkout, and external connectors
+    remain in subsequent MVP cycles.
 servers:
   - url: /api/v1
     description: Versioned API base path
@@ -2165,6 +2171,133 @@ paths:
         '409':
           $ref: '#/components/responses/DailySaleCorrectionConflict'
 
+  /imports/templates/{kind}/:
+    get:
+      operationId: downloadImportTemplate
+      summary: Download an exact CSV or XLSX import template
+      tags: [Imports]
+      security: []
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ImportKind'
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [csv, xlsx]
+            default: csv
+      responses:
+        '200':
+          description: Header-only spreadsheet template.
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Import kind does not exist.
+  /imports/previews/:
+    post:
+      operationId: createSpreadsheetImportPreview
+      summary: Validate a full spreadsheet without applying its rows
+      description: |
+        Multipart upload. Supported kinds are products, suppliers, conditions,
+        opening_stock, daily_sales, and out_of_stock_days. The import is
+        organization-scoped. Catalog and condition imports are for network
+        administrators/buyers; inventory history imports are for
+        administrators or assigned store managers/operators. Product updates
+        never modify stock, and base-unit changes are rejected. Opening stock
+        must include exactly every active assortment item, including zeroes.
+        Daily sales must declare a complete date range; omitted SKU/date rows
+        in that period represent zero only while the product is active in the
+        store assortment. The uploaded file is not applied by this operation.
+      tags: [Imports]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ImportPreviewRequest'
+      responses:
+        '201':
+          description: Whole-file validation result and change preview.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportBatchPreview'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          description: Role or assigned store scope does not allow this import.
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+  /imports/previews/{batchId}/:
+    get:
+      operationId: getSpreadsheetImportPreview
+      summary: Read a preview created by the current user
+      tags: [Imports]
+      security:
+        - SessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/ImportBatchId'
+      responses:
+        '200':
+          description: Current preview and its state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportBatchPreview'
+        '404':
+          description: Preview is unavailable in the active organization.
+  /imports/previews/{batchId}/confirm/:
+    post:
+      operationId: confirmSpreadsheetImport
+      summary: Revalidate and atomically apply a complete spreadsheet import
+      description: |
+        Only the user who created the preview may confirm it. All affected
+        records are revalidated before any write. If the target data changed,
+        the response is 409 with a refreshed preview and no rows are applied.
+        A preview expires after 30 minutes and may be confirmed only once.
+      tags: [Imports]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      parameters:
+        - $ref: '#/components/parameters/ImportBatchId'
+      responses:
+        '200':
+          description: Every valid row was applied in one transaction.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportBatchPreview'
+        '403':
+          description: Role or assigned store scope no longer allows this import.
+        '404':
+          description: Preview is unavailable in the active organization.
+        '409':
+          description: Stale preview, invalid rows, or an already confirmed batch; no partial write occurs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportProblem'
+        410:
+          description: The preview expired before confirmation.
+          content:
+            application/json:
+              schema:
+                $ref: #/components/schemas/ImportProblem
   /purchase-budgets/:
     get:
       operationId: getNetworkPurchaseBudget
@@ -2650,6 +2783,14 @@ components:
       schema:
         type: string
         format: uuid
+    ImportBatchId:
+      name: batchId
+      in: path
+      required: true
+      description: Import preview UUID, visible only to its creator in the active organization.
+      schema:
+        type: string
+        format: uuid
   responses:
     ValidationError:
       description: Request validation failed.
@@ -2838,6 +2979,136 @@ components:
               - $ref: '#/components/schemas/IdempotencyConflict'
               - $ref: '#/components/schemas/DailySaleQuantityConflict'
   schemas:
+    ImportKind:
+      type: string
+      enum: [products, suppliers, conditions, opening_stock, daily_sales, out_of_stock_days]
+    ImportPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [kind, file]
+      properties:
+        kind:
+          $ref: '#/components/schemas/ImportKind'
+        file:
+          type: string
+          format: binary
+          description: CSV or XLSX file up to 10 MB and 10,000 data rows.
+        storeId:
+          type: string
+          format: uuid
+          description: Required for opening_stock, daily_sales, and out_of_stock_days.
+        closedOperationalDate:
+          type: string
+          format: date
+          description: Required for opening_stock; ISO date for the day closed by the physical count.
+        operationalDateFrom:
+          type: string
+          format: date
+          description: Required for daily_sales and marks the first complete operational date.
+        operationalDateTo:
+          type: string
+          format: date
+          description: Required for daily_sales and marks the final complete operational date.
+    ImportIssue:
+      type: object
+      additionalProperties: false
+      required: [rowNumber, code, message]
+      properties:
+        rowNumber:
+          type: integer
+          nullable: true
+        code:
+          type: string
+        field:
+          type: string
+        message:
+          type: string
+    ImportChange:
+      type: object
+      additionalProperties: false
+      required: [rowNumber, key, action, before, after]
+      properties:
+        rowNumber:
+          type: integer
+          nullable: true
+        key:
+          type: string
+        action:
+          type: string
+          enum: [create, update, unchanged, conflict]
+        before:
+          type: object
+          additionalProperties: true
+        after:
+          type: object
+          additionalProperties: true
+    ImportBatchPreview:
+      type: object
+      additionalProperties: false
+      required: [batchId, kind, fileName, fileSha256, status, createdAt, expiresAt, confirmedAt, counts, issueCount, issues, changeCount, changes, canConfirm]
+      properties:
+        batchId:
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/ImportKind'
+        fileName:
+          type: string
+        fileSha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        status:
+          type: string
+          enum: [preview, confirmed, expired]
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        confirmedAt:
+          type: string
+          format: date-time
+          nullable: true
+        counts:
+          type: object
+          additionalProperties: false
+          required: [rows, create, update, unchanged]
+          properties:
+            rows:
+              type: integer
+            create:
+              type: integer
+            update:
+              type: integer
+            unchanged:
+              type: integer
+        issueCount:
+          type: integer
+        issues:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImportIssue'
+        changeCount:
+          type: integer
+        changes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImportChange'
+        canConfirm:
+          type: boolean
+    ImportProblem:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [import_already_confirmed, import_preview_expired, import_preview_stale, import_validation_failed]
+        message:
+          type: string
+        preview:
+          $ref: '#/components/schemas/ImportBatchPreview'
     MembershipRole:
       type: string
       enum: [administrator, store_manager, operator, buyer]
