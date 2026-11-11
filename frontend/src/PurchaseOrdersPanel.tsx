@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { apiGet, apiPatch, apiPost, ApiError } from './api';
+import { exportPurchaseOrderXlsx, printPurchaseOrder } from './purchaseOrderExport';
 
 type PurchaseOrderStatus = 'draft' | 'reviewed' | 'approved' | 'partially_received' | 'received' | 'cancelled' | 'stale' | string;
 type PurchaseOrderItem = {
@@ -165,7 +166,10 @@ export default function PurchaseOrdersPanel({ storeId, storeName, role, isAdmini
   const canCreateDraft = canManageOrders || role === 'buyer';
   const canReviewOrders = canManageOrders || role === 'buyer';
   const canApproveOrders = isAdministrator || role === 'store_manager';
-  const canReadOrders = isAdministrator || role === 'store_manager' || role === 'buyer';
+  const canReceiveOrders = isAdministrator || role === 'store_manager' || role === 'operator';
+  const canReadOrders = canReceiveOrders || role === 'buyer';
+  const canReadPurchasePlanning = isAdministrator || role === 'store_manager' || role === 'buyer';
+  const canExportOrders = isAdministrator || role === 'store_manager' || role === 'buyer';
   const [online, setOnline] = useState(onlineNow);
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [recommendations, setRecommendations] = useState<ReplenishmentRecommendation[]>([]);
@@ -230,29 +234,39 @@ export default function PurchaseOrdersPanel({ storeId, storeName, role, isAdmini
     let cancelled = false;
     setLoading(true);
     setError('');
-    Promise.all([
-      apiGet<{ purchaseOrders: PurchaseOrder[] }>(`/stores/${storeId}/purchase-orders/`),
-      apiGet<RecommendationResponse>(`/stores/${storeId}/replenishment-recommendations/`),
-      apiGet<PurchaseBudget>('/purchase-budgets/'),
-      apiGet<PurchaseBudget>(`/stores/${storeId}/purchase-budget/`),
-    ])
-      .then(([orderList, recommendationData, network, store]) => {
+    async function loadData() {
+      const orderList = await apiGet<{ purchaseOrders: PurchaseOrder[] }>(`/stores/${storeId}/purchase-orders/`);
+      if (!canReadPurchasePlanning) {
         if (cancelled) return;
         setOrders(orderList.purchaseOrders);
-        setRecommendations(recommendationData.recommendations);
-        setNetworkBudget(network);
-        setStoreBudget(store);
-        setNetworkBudgetForm(newBudgetForm(network));
-        setStoreBudgetForm(newBudgetForm(store));
+        setRecommendations([]);
+        setNetworkBudget(null);
+        setStoreBudget(null);
         setSelectedOrder((current) => current ? orderList.purchaseOrders.find((order) => order.id === current.id) ?? null : null);
-        setSelectedSupplierId((current) => current && recommendationData.recommendations.some((item) => item.supplierComparisons.some((supplier) => supplier.supplierId === current))
-          ? current
-          : recommendationData.recommendations.flatMap((item) => item.supplierComparisons).find((supplier) => supplier.selected && supplier.orderQuantity !== null)?.supplierId ?? '');
-      })
+        return;
+      }
+      const [recommendationData, network, store] = await Promise.all([
+        apiGet<RecommendationResponse>(`/stores/${storeId}/replenishment-recommendations/`),
+        apiGet<PurchaseBudget>('/purchase-budgets/'),
+        apiGet<PurchaseBudget>(`/stores/${storeId}/purchase-budget/`),
+      ]);
+      if (cancelled) return;
+      setOrders(orderList.purchaseOrders);
+      setRecommendations(recommendationData.recommendations);
+      setNetworkBudget(network);
+      setStoreBudget(store);
+      setNetworkBudgetForm(newBudgetForm(network));
+      setStoreBudgetForm(newBudgetForm(store));
+      setSelectedOrder((current) => current ? orderList.purchaseOrders.find((order) => order.id === current.id) ?? null : null);
+      setSelectedSupplierId((current) => current && recommendationData.recommendations.some((item) => item.supplierComparisons.some((supplier) => supplier.supplierId === current))
+        ? current
+        : recommendationData.recommendations.flatMap((item) => item.supplierComparisons).find((supplier) => supplier.selected && supplier.orderQuantity !== null)?.supplierId ?? '');
+    }
+    loadData()
       .catch((requestError: unknown) => { if (!cancelled) setError(errorMessage(requestError)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [canReadOrders, enabled, reloadSequence, storeId]);
+  }, [canReadOrders, canReadPurchasePlanning, enabled, reloadSequence, storeId]);
 
   useEffect(() => {
     if (!selectedOrder) {
@@ -510,7 +524,7 @@ export default function PurchaseOrdersPanel({ storeId, storeName, role, isAdmini
 
       {enabled && storeId && !loading && (
         <>
-          <div className="purchase-budget-summary">
+          {canReadPurchasePlanning && <div className="purchase-budget-summary">
             <div>
               <span>Limite semanal efetivo</span>
               <strong>{effectiveWeeklyLimit === null ? 'Não configurado' : `R$ ${displayDecimal(effectiveWeeklyLimit)}`}</strong>
@@ -527,8 +541,8 @@ export default function PurchaseOrdersPanel({ storeId, storeName, role, isAdmini
               <span>Origem dos limites</span>
               <strong>{storeBudget?.inheritsNetwork ? 'Padrão da rede' : 'Ajuste desta loja'}</strong>
             </div>
-          </div>
-          {(effectiveWeeklyLimit === null || effectiveMonthlyLimit === null) && (
+          </div>}
+          {canReadPurchasePlanning && (effectiveWeeklyLimit === null || effectiveMonthlyLimit === null) && (
             <p className="calendar-block-message" role="status">Falta configurar um limite semanal e/ou mensal. O servidor validará as exceções antes da aprovação.</p>
           )}
 
@@ -563,7 +577,7 @@ export default function PurchaseOrdersPanel({ storeId, storeName, role, isAdmini
             </details>
           )}
 
-          <details className="purchase-order-create" open={orders.length === 0}>
+          {canCreateDraft && <details className="purchase-order-create" open={orders.length === 0}>
             <summary>Criar rascunho a partir da recomendação</summary>
             <p className="field-hint">Escolha um fornecedor e os produtos disponíveis para ele. O servidor cria o rascunho com as quantidades calculadas e guarda o snapshot da recomendação.</p>
             {recommendations.length === 0 && <p className="empty-state">Não há recomendações de compra para criar um rascunho. Confira o painel de recomendações acima.</p>}
@@ -590,7 +604,7 @@ export default function PurchaseOrdersPanel({ storeId, storeName, role, isAdmini
                 {!canCreateDraft && <p className="field-hint">Seu perfil pode consultar os pedidos; um comprador ou gerente autorizado cria o rascunho.</p>}
               </form>
             )}
-          </details>
+          </details>}
 
           <div className="purchase-orders-list-heading">
             <div><h4>Pedidos da loja</h4><p>{orders.length} pedido(s) · cada pedido permanece vinculado a esta loja.</p></div>
@@ -617,13 +631,22 @@ export default function PurchaseOrdersPanel({ storeId, storeName, role, isAdmini
 
           {selectedOrder && (
             <section className="purchase-order-detail" aria-labelledby="purchase-order-detail-heading" aria-busy={busy}>
+              <p className="purchase-order-print-brand">CompraCerta · {storeName} · Pedido {selectedOrder.id.slice(0, 8)}</p>
               <div className="purchase-order-detail-heading">
                 <div>
                   <p className="eyebrow">Detalhes do pedido</p>
                   <h4 id="purchase-order-detail-heading">{selectedOrder.supplierName}</h4>
                   <p>{statusLabel(selectedOrder.status)} · criado {displayDateTime(selectedOrder.createdAt)}{selectedOrder.approvedAt ? ` · aprovado ${displayDateTime(selectedOrder.approvedAt)}` : ''}</p>
                 </div>
-                <button className="text-button" disabled={busy || !online} onClick={() => void openOrder(selectedOrder.id)} type="button">Recarregar</button>
+                <div className="purchase-order-export-actions">
+                  {canExportOrders && ['approved', 'partially_received', 'received'].includes(selectedOrder.status) && (
+                    <>
+                      <button className="secondary-button" disabled={busy} onClick={() => exportPurchaseOrderXlsx(selectedOrder, storeName)} type="button">Baixar Excel (.xlsx)</button>
+                      <button className="text-button" disabled={busy} onClick={() => printPurchaseOrder(`${storeName}-pedido-${selectedOrder.id.slice(0, 8)}`)} type="button">Imprimir / salvar PDF</button>
+                    </>
+                  )}
+                  <button className="text-button" disabled={busy || !online} onClick={() => void openOrder(selectedOrder.id)} type="button">Recarregar</button>
+                </div>
               </div>
               {selectedOrder.stale && <p className="calendar-block-message" role="status">Este rascunho está desatualizado. Confira as recomendações atuais e revalide antes de solicitar aprovação.</p>}
               <p className="field-hint">O valor comprometido só muda com aprovação e é revalidado pelo servidor.</p>
@@ -714,7 +737,7 @@ export default function PurchaseOrdersPanel({ storeId, storeName, role, isAdmini
                     <button className="submit-button" disabled={busy || !online || !canApproveOrders || selectedOrder.stale} onClick={() => void approveOrder()} type="button">Aprovar pedido online</button>
                   </div>
                 )}
-                {(selectedOrder.status === 'approved' || selectedOrder.status === 'partially_received') && canManageOrders && (
+                {(selectedOrder.status === 'approved' || selectedOrder.status === 'partially_received') && canReceiveOrders && (
                   <>
                     <form className="workspace-form purchase-order-action-form" onSubmit={(event) => void recordReceipt(event)} aria-busy={busy}>
                       <h5>Registrar recebimento parcial ou total</h5>

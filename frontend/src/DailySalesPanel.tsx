@@ -38,6 +38,7 @@ type Props = {
   storeName: string;
   assortments: StoreAssortment[];
   storeDetailsLoading: boolean;
+  canEdit: boolean;
   onBusyChange: (busy: boolean) => void;
 };
 
@@ -93,7 +94,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Não foi possível concluir a solicitação.';
 }
 
-export default function DailySalesPanel({ storeId, storeName, assortments, storeDetailsLoading, onBusyChange }: Props) {
+export default function DailySalesPanel({ storeId, storeName, assortments, storeDetailsLoading, canEdit, onBusyChange }: Props) {
   const salesRequestSequence = useRef(0);
   const currentStoreId = useRef(storeId);
   const [dateFrom, setDateFrom] = useState('');
@@ -394,7 +395,7 @@ export default function DailySalesPanel({ storeId, storeName, assortments, store
                 <td>{sale.quantity} {quantityUnit(sale.baseUnit)}</td>
                 <td>{sale.stockTreatment === 'demand_only' ? 'Histórico de demanda' : 'Movimento de saída'} · {sale.demandEligible ? 'elegível para demanda' : 'fora da demanda'} · corte {dateLabel(sale.cutoffDate)}</td>
                 <td>{dateTimeLabel(sale.createdAt)} · usuário {sale.createdBy} · {sale.correctionCount} correção(ões)</td>
-                <td><button className="text-button" aria-pressed={selectedSaleId === sale.id} onClick={() => setSelectedSaleId(sale.id)} type="button">Ver/corrigir</button></td>
+                <td><button className="text-button" aria-pressed={selectedSaleId === sale.id} onClick={() => setSelectedSaleId(sale.id)} type="button">{canEdit ? 'Ver/corrigir' : 'Ver histórico'}</button></td>
               </tr>
             ))}
             {sales.length === 0 && salesLoaded && <tr><td colSpan={7}>Nenhuma venda registrada neste período.</td></tr>}
@@ -404,7 +405,7 @@ export default function DailySalesPanel({ storeId, storeName, assortments, store
         </table>
       </div>
 
-      <form className="workspace-form daily-sale-form" onSubmit={submitSale} aria-busy={busy}>
+      {canEdit ? <form className="workspace-form daily-sale-form" onSubmit={submitSale} aria-busy={busy}>
         <h4>Registrar total diário</h4>
         <label htmlFor="saleOperationalDate">Data operacional da venda</label>
         <input disabled={busy || storeDetailsLoading || !storeId} id="saleOperationalDate" onChange={(event) => updateSaleDate(event.target.value)} required type="date" value={saleOperationalDate} />
@@ -418,7 +419,7 @@ export default function DailySalesPanel({ storeId, storeName, assortments, store
         {selectedProduct && <p className="field-hint">Unidade: {quantityUnit(selectedProduct.baseUnit)}. {quantityHint(selectedProduct.baseUnit)}</p>}
         {!storeDetailsLoading && saleOperationalDate && eligibleProducts.length === 0 && <p className="field-hint">Nenhum produto vinculado à loja desde essa data está disponível para lançamento.</p>}
         <button className="submit-button" disabled={busy || storeDetailsLoading || !storeId || !selectedProduct} type="submit">{busy ? 'Salvando…' : 'Registrar venda diária'}</button>
-      </form>
+      </form> : <p className="field-hint">Seu papel permite consultar as vendas desta loja, mas não registrar ou corrigir totais.</p>}
 
       {selectedSale && (
         <section className="daily-sale-detail" aria-labelledby="correction-heading">
@@ -444,7 +445,7 @@ export default function DailySalesPanel({ storeId, storeName, assortments, store
               </tbody>
             </table>
           </div>
-          <form className="workspace-form daily-correction-form" onSubmit={submitCorrection} aria-busy={busy}>
+          {canEdit && <form className="workspace-form daily-correction-form" onSubmit={submitCorrection} aria-busy={busy}>
             <h4>Corrigir total diário</h4>
             <label htmlFor="correctionNewQuantity">Novo total</label>
             <input disabled={busy || loadingCorrections} id="correctionNewQuantity" inputMode={selectedSale.baseUnit === 'unit' ? 'numeric' : 'decimal'} min="0" onChange={(event) => updateCorrectionQuantity(event.target.value)} required step={selectedSale.baseUnit === 'unit' ? '1' : '0.001'} type="number" value={correctionNewQuantity} />
@@ -452,7 +453,7 @@ export default function DailySalesPanel({ storeId, storeName, assortments, store
             <label htmlFor="correctionReason">Motivo da correção</label>
             <textarea disabled={busy || loadingCorrections} id="correctionReason" onChange={(event) => updateCorrectionReason(event.target.value)} required rows={3} value={correctionReason} />
             <button className="submit-button" disabled={busy || loadingCorrections || !correctionReason.trim()} type="submit">{busy ? 'Salvando correção…' : 'Salvar correção auditada'}</button>
-          </form>
+          </form>}
         </section>
       )}
     </section>

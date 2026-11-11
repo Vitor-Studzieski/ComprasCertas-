@@ -4,6 +4,7 @@ import DailySalesPanel from './DailySalesPanel';
 import PurchaseOrdersPanel from './PurchaseOrdersPanel';
 import ReplenishmentRecommendationsPanel from './ReplenishmentRecommendationsPanel';
 import SupplierCatalogPanel from './SupplierCatalogPanel';
+import TeamAccessPanel from './TeamAccessPanel';
 
 type CalendarVersion = {
   id: string;
@@ -159,23 +160,27 @@ export default function OpeningStockWorkspace({
   const selectedStoreOverrideComplete = selectedStoreOverrideHasNetworkDefault
     ? selectedStoreOverrideHasValue
     : Boolean(selectedStoreCalendarForm.timeZone.trim() && selectedStoreCalendarForm.operationalDayStart);
+  const canEditStoreCalendar = isAdministrator || role === 'store_manager';
+  const managerCalendarOverrideComplete = Boolean(selectedStoreCalendarForm.effectiveFrom)
+    && (selectedStoreOverrideHasValue || Boolean(activeStore?.effectiveCalendar));
+  const canSaveSelectedStoreCalendar = isAdministrator
+    ? selectedStoreOverrideComplete
+    : managerCalendarOverrideComplete;
 
   useEffect(() => {
-    if (!isAdministrator) {
-      setLoading(false);
-      return;
-    }
     let cancelled = false;
     setLoading(true);
     setError('');
 
     Promise.all([
-      apiGet<WorkspaceData['calendar']>('/organizations/current/operational-calendar/'),
       apiGet<WorkspaceData['storeList']>('/stores/'),
       apiGet<WorkspaceData['productList']>('/products/'),
       apiGet<WorkspaceData['categoryList']>('/product-categories/'),
+      isAdministrator
+        ? apiGet<WorkspaceData['calendar']>('/organizations/current/operational-calendar/')
+        : Promise.resolve<WorkspaceData['calendar']>({ versions: [] }),
     ])
-      .then(([calendar, storeList, productList, categoryList]) => {
+      .then(([storeList, productList, categoryList, calendar]) => {
         if (cancelled) return;
         setCalendarVersions(calendar.versions);
         setStores(storeList.stores);
@@ -209,6 +214,7 @@ export default function OpeningStockWorkspace({
     let cancelled = false;
     setAssortments([]);
     setStoreCalendarVersions([]);
+    setSelectedStoreCalendarForm(initialStoreCalendarForm);
     setBalances([]);
     setError('');
     setBalanceLoaded(false);
@@ -493,8 +499,7 @@ export default function OpeningStockWorkspace({
 
       {notice && <p className="form-notice" role="status">{notice}</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
-      {!isAdministrator && <p className="calendar-block-message" role="alert">Este fluxo de configuração e estoque inicial está disponível para o administrador da rede. Suas permissões operacionais continuam sendo verificadas pelo servidor.</p>}
-      {isAdministrator && loading && <p className="sending-status" role="status">Carregando os dados da rede…</p>}
+      {loading && <p className="sending-status" role="status">Carregando lojas e produtos autorizados…</p>}
 
       {isAdministrator && !loading && (
         <>
@@ -580,7 +585,7 @@ export default function OpeningStockWorkspace({
                   <p className="field-hint">{selectedStoreOverrideHasNetworkDefault
                     ? 'Há padrão da rede vigente nesta data. Informe pelo menos um campo; os demais herdam o padrão.'
                     : 'Não há padrão da rede vigente nesta data. Informe fuso e início do dia para habilitar operações na loja.'}</p>
-                  <button className="submit-button" disabled={busy || !selectedStoreId || !selectedStoreCalendarForm.effectiveFrom || !selectedStoreOverrideComplete} type="submit">{busy ? 'Salvando…' : 'Adicionar exceção de calendário'}</button>
+                  <button className="submit-button" disabled={busy || !selectedStoreId || !selectedStoreCalendarForm.effectiveFrom || !canSaveSelectedStoreCalendar} type="submit">{busy ? 'Salvando…' : 'Adicionar exceção de calendário'}</button>
                 </form>
               </div>
             )}
@@ -732,8 +737,90 @@ export default function OpeningStockWorkspace({
             ) : <p className="empty-state">Saldo indisponível até configurar um calendário operacional efetivo para a loja.</p>}
           </section>
 
+        </>
+      )}
+
+      {!isAdministrator && !loading && (
+        <section className="workspace-section" aria-labelledby="assigned-stores-heading">
+          <div className="section-heading">
+            <span className="step-number" aria-hidden="true">1</span>
+            <div><h3 id="assigned-stores-heading">Lojas atribuídas</h3><p>A lista contém apenas as lojas autorizadas para seu papel nesta rede.</p></div>
+          </div>
+          {stores.length > 0 ? (
+            <div className="workspace-form store-selector-form">
+              <label htmlFor="assignedStore">Loja ativa</label>
+              <select disabled={busy || dailySalesBusy} id="assignedStore" onChange={(event) => { setSelectedStoreId(event.target.value); setClosedOperationalDate(''); setQuantities({}); }} value={selectedStoreId}>
+                {stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+              </select>
+            </div>
+          ) : <p className="empty-state">Ainda não há lojas atribuídas a esta conta. Peça ao administrador da rede para revisar seu escopo.</p>}
+          {activeStore && !activeStore.effectiveCalendar && <p className="calendar-block-message" role="status">Esta loja não tem calendário operacional vigente; vendas e consultas de saldo ficam bloqueadas até a configuração ser concluída.</p>}
+        </section>
+      )}
+
+      {!isAdministrator && !loading && selectedStoreId && (
+        <section className="workspace-section" aria-labelledby="assigned-calendar-heading">
+          <div className="section-heading">
+            <span className="step-number" aria-hidden="true">2</span>
+            <div><h3 id="assigned-calendar-heading">Calendário da loja</h3><p>{activeStore?.name ?? 'Loja selecionada'} · versões por data, com histórico preservado.</p></div>
+          </div>
+          {!activeStore?.effectiveCalendar && <p className="calendar-block-message" role="status">Esta loja ainda não tem calendário vigente. O gerente precisa definir o fuso e o fechamento do dia antes das operações de venda e estoque.</p>}
+          <ul className="calendar-version-list" aria-label={`Versões do calendário de ${activeStore?.name ?? 'loja selecionada'}`}>
+            {storeCalendarVersions.map((version) => (
+              <li key={version.id}>
+                <strong>{displayDate(version.effectiveFrom)}</strong>
+                <span>{version.timeZone ?? 'Fuso herdado da rede'} · {version.operationalDayStart ? `início às ${version.operationalDayStart}` : 'início herdado da rede'}</span>
+              </li>
+            ))}
+            {!storeDetailsLoading && storeCalendarVersions.length === 0 && <li className="empty-state">Nenhuma exceção cadastrada; os valores são herdados da rede.</li>}
+            {storeDetailsLoading && <li className="empty-state">Carregando calendário da loja…</li>}
+          </ul>
+          {canEditStoreCalendar ? (
+            <form className="workspace-form" onSubmit={submitSelectedStoreCalendar} aria-busy={busy}>
+              <h4>Definir exceção para esta loja</h4>
+              <label htmlFor="assignedStoreOverrideDate">Vigente a partir de</label>
+              <input disabled={busy} id="assignedStoreOverrideDate" onChange={(event) => setSelectedStoreCalendarForm({ ...selectedStoreCalendarForm, effectiveFrom: event.target.value })} required type="date" value={selectedStoreCalendarForm.effectiveFrom} />
+              <label htmlFor="assignedStoreOverrideTimeZone">Fuso horário próprio</label>
+              <input autoComplete="off" disabled={busy} id="assignedStoreOverrideTimeZone" maxLength={64} onChange={(event) => setSelectedStoreCalendarForm({ ...selectedStoreCalendarForm, timeZone: event.target.value })} placeholder="Ex.: America/Sao_Paulo" value={selectedStoreCalendarForm.timeZone} />
+              <label htmlFor="assignedStoreOverrideDayStart">Início do dia operacional próprio</label>
+              <input disabled={busy} id="assignedStoreOverrideDayStart" onChange={(event) => setSelectedStoreCalendarForm({ ...selectedStoreCalendarForm, operationalDayStart: event.target.value })} type="time" value={selectedStoreCalendarForm.operationalDayStart} />
+              <p className="field-hint">O gerente pode preencher um ou os dois valores quando a loja já tem calendário vigente. Sem calendário efetivo, informe fuso e horário de fechamento. Os campos não informados herdam o valor da rede quando houver.</p>
+              <button className="submit-button" disabled={busy || storeDetailsLoading || !selectedStoreCalendarForm.effectiveFrom || !canSaveSelectedStoreCalendar} type="submit">{busy ? 'Salvando…' : 'Salvar calendário da loja'}</button>
+            </form>
+          ) : (
+            <p className="field-hint">Apenas o gerente desta loja pode alterar o calendário local.</p>
+          )}
+        </section>
+      )}
+
+      {!isAdministrator && !loading && selectedStoreId && (
+        <section className="workspace-section" aria-labelledby="assigned-balance-heading">
+          <div className="section-heading">
+            <span className="step-number" aria-hidden="true">2</span>
+            <div><h3 id="assigned-balance-heading">Saldo atual do estoque</h3><p>{balanceDate ? `Data operacional: ${displayDate(balanceDate)}.` : 'Saldo calculado pelas movimentações registradas.'}</p></div>
+          </div>
+          <div className="balance-toolbar">
+            <p className="field-hint">{activeStore?.name ?? 'Loja selecionada'}</p>
+            <button className="secondary-button" disabled={busy || !activeStore?.effectiveCalendar} onClick={() => void loadBalances(selectedStoreId)} type="button">Atualizar saldo</button>
+          </div>
+          <div className="table-scroll" role="region" aria-label="Saldo atual por produto" tabIndex={0}>
+            <table className="balance-table">
+              <thead><tr><th scope="col">SKU</th><th scope="col">Produto</th><th scope="col">Unidade</th><th scope="col">Saldo</th></tr></thead>
+              <tbody>
+                {balances.map((balance) => <tr key={balance.productId}><td>{balance.sku}</td><td>{balance.productName}</td><td>{unitLabel(balance.baseUnit)}</td><td>{balance.quantity}</td></tr>)}
+                {balances.length === 0 && balanceLoaded && <tr><td colSpan={4}>Nenhum movimento de estoque retornado para esta loja.</td></tr>}
+                {balances.length === 0 && !balanceLoaded && <tr><td colSpan={4}>Saldo não carregado. Confira o aviso da solicitação.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {!loading && selectedStoreId && (
+        <>
           <DailySalesPanel
             assortments={assortments}
+            canEdit={isAdministrator || role === 'store_manager' || role === 'operator'}
             onBusyChange={setDailySalesBusy}
             storeDetailsLoading={storeDetailsLoading}
             storeId={selectedStoreId}
@@ -742,22 +829,25 @@ export default function OpeningStockWorkspace({
           <ReplenishmentRecommendationsPanel
             assortments={assortments}
             categories={categories}
-            enabled={isAdministrator}
+            enabled={isAdministrator || role === 'store_manager' || role === 'buyer'}
+            canManageEvidence={isAdministrator || role === 'store_manager'}
+            canManageSettings={isAdministrator}
             onCategoryCreated={(category) => setCategories((current) => current.some((item) => item.id === category.id) ? current : [...current, category].sort((left, right) => left.name.localeCompare(right.name, 'pt-BR')))}
             products={products}
             storeId={selectedStoreId}
             storeName={activeStore?.name ?? 'loja selecionada'}
           />
           <PurchaseOrdersPanel
-            enabled={isAdministrator}
+            enabled={isAdministrator || role === 'store_manager' || role === 'buyer' || role === 'operator'}
             isAdministrator={isAdministrator}
             role={role}
             storeId={selectedStoreId}
             storeName={activeStore?.name ?? 'loja selecionada'}
           />
+          {isAdministrator && <TeamAccessPanel organizationName={organizationName} />}
         </>
       )}
-      <SupplierCatalogPanel canManageCatalog={canManageCatalog} isAdministrator={isAdministrator} />
+      <SupplierCatalogPanel canManageCatalog={canManageCatalog} isAdministrator={isAdministrator} role={role} />
     </div>
   );
 }

@@ -70,6 +70,8 @@ type Props = {
   storeId: string;
   storeName: string;
   enabled: boolean;
+  canManageSettings: boolean;
+  canManageEvidence: boolean;
   products: Array<{ id: string; sku: string; name: string; baseUnit: ProductUnit }>;
   assortments: Array<{ productId: string; sku: string; productName: string; baseUnit: ProductUnit }>;
   categories: ProductCategory[];
@@ -341,6 +343,8 @@ export default function ReplenishmentRecommendationsPanel({
   storeId,
   storeName,
   enabled,
+  canManageSettings,
+  canManageEvidence,
   products,
   assortments,
   categories,
@@ -609,7 +613,7 @@ export default function ReplenishmentRecommendationsPanel({
 
       {enabled && (
         <div className="replenishment-setup-grid">
-          <details className="replenishment-setup-section">
+          {canManageSettings ? <details className="replenishment-setup-section">
             <summary>Configurar parâmetros de reposição</summary>
             <p className="field-hint">O sistema usa o valor mais específico: produto/loja, produto, categoria e rede. O intervalo de revisão usa o ajuste da loja ou, sem ele, o padrão da rede. Os valores vazios herdam o nível anterior.</p>
             <ReplenishmentSettingsEditor
@@ -682,11 +686,15 @@ export default function ReplenishmentRecommendationsPanel({
               ))}
               {assortments.length === 0 && <p className="empty-state">Vincule produtos ao sortimento desta loja para criar ajustes específicos.</p>}
             </div>
-          </details>
+          </details> : (
+            <p className="field-hint replenishment-scope-note">Os parâmetros de reposição são configurados pelo administrador da rede.</p>
+          )}
 
           <details className="replenishment-setup-section">
             <summary>Completar os dados de demanda</summary>
-            <p className="field-hint">Registre intervalos de vendas comprovadamente completos. Dentro deles, a ausência de uma linha significa zero para produtos ativos no sortimento. Marque os dias sem estoque separadamente para que sejam excluídos da média.</p>
+            <p className="field-hint">{canManageEvidence
+              ? 'Registre intervalos de vendas comprovadamente completos. Dentro deles, a ausência de uma linha significa zero para produtos ativos no sortimento. Marque os dias sem estoque separadamente para que sejam excluídos da média.'
+              : 'Consulte os períodos completos e dias sem estoque que formam a evidência da recomendação. Um gerente pode registrar novos dados.'}</p>
             {setupError && <p className="form-error" role="alert">{setupError}</p>}
             {setupNotice && <p className="form-notice" role="status">{setupNotice}</p>}
             <div className="replenishment-data-grid">
@@ -698,13 +706,13 @@ export default function ReplenishmentRecommendationsPanel({
                   ))}
                   {coveragePeriods.length === 0 && <li className="empty-state">Nenhum período completo declarado.</li>}
                 </ul>
-                <form className="replenishment-settings-form" onSubmit={(event) => void declareCoverage(event)} aria-busy={setupBusy}>
+                {canManageEvidence && <form className="replenishment-settings-form" onSubmit={(event) => void declareCoverage(event)} aria-busy={setupBusy}>
                   <label htmlFor="salesCoverageFrom">De (data operacional)</label>
                   <input disabled={setupBusy} id="salesCoverageFrom" onChange={(event) => setSalesCoverageFrom(event.target.value)} required type="date" value={salesCoverageFrom} />
                   <label htmlFor="salesCoverageTo">Até (data operacional)</label>
                   <input disabled={setupBusy} id="salesCoverageTo" onChange={(event) => setSalesCoverageTo(event.target.value)} required type="date" value={salesCoverageTo} />
                   <button className="secondary-button" disabled={setupBusy || !storeId} type="submit">Declarar período completo</button>
-                </form>
+                </form>}
               </div>
               <div className="replenishment-scope-list">
                 <h4>Dias sem estoque · {storeName}</h4>
@@ -715,7 +723,7 @@ export default function ReplenishmentRecommendationsPanel({
                   })}
                   {outOfStockDays.length === 0 && <li className="empty-state">Nenhum dia sem estoque registrado.</li>}
                 </ul>
-                <form className="replenishment-settings-form" onSubmit={(event) => void recordOutOfStockDay(event)} aria-busy={setupBusy}>
+                {canManageEvidence && <form className="replenishment-settings-form" onSubmit={(event) => void recordOutOfStockDay(event)} aria-busy={setupBusy}>
                   <label htmlFor="outOfStockProduct">Produto</label>
                   <select disabled={setupBusy || assortments.length === 0} id="outOfStockProduct" onChange={(event) => setOutOfStockProductId(event.target.value)} required value={outOfStockProductId}>
                     <option value="">Selecione um produto do sortimento</option>
@@ -724,7 +732,7 @@ export default function ReplenishmentRecommendationsPanel({
                   <label htmlFor="outOfStockDate">Data operacional sem estoque</label>
                   <input disabled={setupBusy} id="outOfStockDate" onChange={(event) => setOutOfStockDate(event.target.value)} required type="date" value={outOfStockDate} />
                   <button className="secondary-button" disabled={setupBusy || !storeId || !outOfStockProductId} type="submit">Registrar dia sem estoque</button>
-                </form>
+                </form>}
               </div>
             </div>
           </details>

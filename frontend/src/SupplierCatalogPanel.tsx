@@ -60,6 +60,7 @@ type ConditionForm = {
 type Props = {
   canManageCatalog: boolean;
   isAdministrator: boolean;
+  role: string;
 };
 
 const emptySupplierForm: SupplierForm = {
@@ -129,7 +130,8 @@ function formatBrlExact(value: string): string {
   return `R$ ${groupedWhole},${fraction.padEnd(2, '0')}`;
 }
 
-export default function SupplierCatalogPanel({ canManageCatalog, isAdministrator }: Props) {
+export default function SupplierCatalogPanel({ canManageCatalog, isAdministrator, role }: Props) {
+  const canSetStoreCondition = isAdministrator || role === 'buyer';
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
@@ -165,8 +167,8 @@ export default function SupplierCatalogPanel({ canManageCatalog, isAdministrator
     const requests: Promise<unknown>[] = [
       apiGet<{ suppliers: Supplier[] }>('/suppliers/'),
       apiGet<{ products: Product[] }>('/products/'),
+      apiGet<{ stores: Store[] }>('/stores/'),
     ];
-    if (isAdministrator) requests.push(apiGet<{ stores: Store[] }>('/stores/'));
 
     Promise.allSettled(requests).then((results) => {
       if (cancelled) return;
@@ -188,15 +190,11 @@ export default function SupplierCatalogPanel({ canManageCatalog, isAdministrator
       } else {
         failures.push(`Produtos: ${explainError(productResult.reason)}`);
       }
-      if (isAdministrator) {
-        const storeResult = results[2];
-        if (storeResult.status === 'fulfilled') {
-          setStores((storeResult.value as { stores: Store[] }).stores);
-        } else {
-          failures.push(`Lojas: ${explainError(storeResult.reason)}`);
-        }
+      const storeResult = results[2];
+      if (storeResult.status === 'fulfilled') {
+        setStores((storeResult.value as { stores: Store[] }).stores);
       } else {
-        setStores([]);
+        failures.push(`Lojas autorizadas: ${explainError(storeResult.reason)}`);
       }
       setError(failures.join(' '));
       setCatalogLoading(false);
@@ -216,21 +214,32 @@ export default function SupplierCatalogPanel({ canManageCatalog, isAdministrator
     setConditions([]);
     setConditionsLoading(true);
     setError('');
-    apiGet<{ supplierId: string; conditions: SupplierCondition[] }>(
-      `/suppliers/${selectedSupplierId}/product-conditions/`,
-    )
-      .then((result) => { if (!cancelled) setConditions(result.conditions); })
+    const assignedStoreRequests = isAdministrator ? [] : stores
+      .filter((store) => store.isActive)
+      .map((store) => apiGet<{ supplierId: string; conditions: SupplierCondition[] }>(
+        `/suppliers/${selectedSupplierId}/product-conditions/?storeId=${encodeURIComponent(store.id)}`,
+      ));
+    Promise.all([
+      apiGet<{ supplierId: string; conditions: SupplierCondition[] }>(`/suppliers/${selectedSupplierId}/product-conditions/`),
+      ...assignedStoreRequests,
+    ])
+      .then((results) => {
+        if (cancelled) return;
+        const merged = new Map<string, SupplierCondition>();
+        results.forEach((result) => result.conditions.forEach((condition) => merged.set(condition.id, condition)));
+        setConditions([...merged.values()]);
+      })
       .catch((requestError: unknown) => { if (!cancelled) setError(explainError(requestError)); })
       .finally(() => { if (!cancelled) setConditionsLoading(false); });
 
     return () => { cancelled = true; };
-  }, [canManageCatalog, isAdministrator, selectedSupplierId]);
+  }, [canManageCatalog, isAdministrator, selectedSupplierId, stores]);
 
   useEffect(() => {
-    if (!isAdministrator) {
+    if (!canSetStoreCondition) {
       setConditionForm((current) => current.storeId ? { ...current, storeId: '' } : current);
     }
-  }, [isAdministrator]);
+  }, [canSetStoreCondition]);
 
   function startNewSupplier() {
     setEditingSupplierId('');
@@ -344,7 +353,7 @@ export default function SupplierCatalogPanel({ canManageCatalog, isAdministrator
       setBusy(false);
       return;
     }
-    const latestDate = latestConditionDate(conditionForm.productId, isAdministrator ? conditionForm.storeId : '');
+    const latestDate = latestConditionDate(conditionForm.productId, canSetStoreCondition ? conditionForm.storeId : '');
     if (latestDate && conditionForm.effectiveFrom <= latestDate) {
       setError(`A vigência precisa ser posterior à última versão deste escopo (${displayDate(latestDate)}).`);
       setBusy(false);
@@ -353,7 +362,7 @@ export default function SupplierCatalogPanel({ canManageCatalog, isAdministrator
 
     const payload = {
       productId: conditionForm.productId,
-      ...(isAdministrator && conditionForm.storeId ? { storeId: conditionForm.storeId } : {}),
+      ...(canSetStoreCondition && conditionForm.storeId ? { storeId: conditionForm.storeId } : {}),
       purchaseUnitName: conditionForm.purchaseUnitName.trim(),
       baseUnitsPerPurchaseUnit: normalizeDecimal(conditionForm.baseUnitsPerPurchaseUnit),
       pricePerPurchaseUnit: normalizeDecimal(conditionForm.pricePerPurchaseUnit),
@@ -399,7 +408,7 @@ export default function SupplierCatalogPanel({ canManageCatalog, isAdministrator
 
       {notice && <p className="form-notice" role="status">{notice}</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
-      {catalogLoading && <p className="sending-status" role="status">Carregando fornecedores e produtos{isAdministrator ? ', lojas' : ''}…</p>}
+      {catalogLoading && <p className="sending-status" role="status">Carregando fornecedores, produtos e lojas autorizadas…</p>}
 
       {!catalogLoading && (
         <>
@@ -468,7 +477,7 @@ export default function SupplierCatalogPanel({ canManageCatalog, isAdministrator
                   <p className="daily-sales-note supplier-unit-note">
                     Unidade de compra, preço, pedido mínimo e múltiplo pertencem à embalagem escolhida. Exemplo: 1 caixa = 12 unidades-base. O prazo é contado em dias corridos. Uma condição específica da loja substitui a condição compartilhada para aquela loja a partir da vigência informada.
                   </p>
-                  {!isAdministrator && <p className="calendar-block-message">Esta condição será compartilhada pela rede. Somente o administrador pode cadastrar uma condição específica para uma loja.</p>}
+                  {!isAdministrator && <p className="calendar-block-message">Você pode registrar condições compartilhadas pela rede ou específicas para lojas do seu escopo.</p>}
 
                   <form className="workspace-form supplier-condition-form" onSubmit={submitCondition} aria-busy={busy}>
                     <h5>Adicionar versão da condição</h5>
@@ -477,7 +486,7 @@ export default function SupplierCatalogPanel({ canManageCatalog, isAdministrator
                       <option value="">Selecione um produto</option>
                       {activeProducts.map((product) => <option key={product.id} value={product.id}>{product.sku} · {product.name} ({unitName(product.baseUnit)})</option>)}
                     </select>
-                    {isAdministrator ? (
+                    {canSetStoreCondition ? (
                       <>
                         <label htmlFor="conditionScope">Escopo da condição</label>
                         <select disabled={busy} id="conditionScope" onChange={(event) => setConditionForm({ ...conditionForm, storeId: event.target.value })} value={conditionForm.storeId}>
