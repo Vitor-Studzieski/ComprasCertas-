@@ -14,12 +14,13 @@ info:
     and people who approve orders or stock adjustments must complete MFA
     before an authenticated session is issued. The technical draft uses
     WebAuthn and server-side Django sessions; it does not use bearer/JWT tokens.
-    Tenant-scoped inventory endpoints use the validated active organization
-    from that session. They accept no organizationId authority from the client;
-    initial inventory writes and store endpoints are administrator-only;
-    product reads and supplier catalog operations permit administrators and
-    buyers, with buyers limited to network-wide supplier conditions until
-    store access assignments exist. Browser writes require CSRF. A tenant
+    Tenant-scoped endpoints use the validated active organization from that
+    session. They accept no organizationId authority from the client. Network
+    administrators manage stores and network defaults; managers, operators,
+    and buyers are limited to audited store assignments. Product and supplier
+    catalog management is available to administrators and buyers. Managers
+    approve store purchases; buyers may prepare and review drafts; managers
+    and operators can register receipts. Browser writes require CSRF. A tenant
     operation is unavailable until an active
     organization is selected when the user has multiple memberships. Before a
     store can record sales or perform stock operations, it must resolve an
@@ -30,9 +31,12 @@ info:
     physical stock count as audited opening movements. Products can be linked
     to network-owned categories. Deterministic replenishment uses the previous
     30 complete operational dates, excludes explicitly recorded out-of-stock
-    dates, and marks incomplete evidence. Expected deliveries, budgets, and
-    freight values are not represented in this increment; recommendations
-    disclose those limitations.
+    dates, and marks incomplete evidence. Weekly and monthly store budgets,
+    purchase review and approval, partial receipts, and receipt-cost
+    reconciliation are covered by the current purchasing contract. Approved
+    orders can be printed or saved as PDF and downloaded as .xlsx from the web
+    client. Offline synchronization, subscription checkout, and external
+    connectors remain in subsequent MVP cycles.
 servers:
   - url: /api/v1
     description: Versioned API base path
@@ -572,6 +576,329 @@ paths:
               schema:
                 $ref: '#/components/schemas/OrganizationUnavailable'
 
+  /organizations/current/memberships/:
+    get:
+      operationId: listOrganizationMemberships
+      summary: List people linked to the active network
+      description: >-
+        Administrator-only and requires the role's MFA assurance. Returns
+        active and removed membership records with the current role and active
+        store assignments. Historical access events remain in the network
+        audit history after access is revoked.
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Memberships in the active organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkMembershipList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+  /organizations/current/memberships/{membershipId}/role/:
+    parameters:
+      - $ref: '#/components/parameters/MembershipId'
+    put:
+      operationId: updateMembershipRoleAndScope
+      summary: Change a person's role and active store scope
+      description: >-
+        Administrator-only and requires MFA. Role and scope are changed
+        atomically and before/after values are audited. An administrator has
+        network-wide access and must send an empty storeIds array. Every other
+        role requires one or more active stores from this organization. The
+        last active administrator cannot be demoted; promote another active
+        member first.
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MembershipRoleUpdateRequest'
+      responses:
+        '200':
+          description: Updated membership and active store assignments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkMembershipRecord'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+        '409':
+          description: The last administrator cannot be demoted or the membership changed concurrently.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /organizations/current/memberships/{membershipId}/store-scope/:
+    parameters:
+      - $ref: '#/components/parameters/MembershipId'
+    put:
+      operationId: replaceMembershipStoreScope
+      summary: Replace assigned stores without changing the person's role
+      description: >-
+        Administrator-only and requires MFA. Removed assignments are revoked
+        and new assignments are appended, with an audit event. Administrators
+        have network-wide access and cannot receive store-specific
+        assignments. Every other role must retain at least one active store.
+        Every supplied store must be active in the selected organization.
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MembershipStoreScopeRequest'
+      responses:
+        '200':
+          description: Updated membership and active store assignments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkMembershipRecord'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+  /organizations/current/memberships/{membershipId}/revoke/:
+    parameters:
+      - $ref: '#/components/parameters/MembershipId'
+    post:
+      operationId: revokeOrganizationMembership
+      summary: Remove a person's access to the active network
+      description: >-
+        Administrator-only and requires MFA. Membership history is preserved
+        with removed status and active store assignments are revoked. The last
+        active administrator cannot be removed.
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      responses:
+        '200':
+          description: Membership access removed or already inactive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkMembershipRecord'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+        '409':
+          description: The last administrator cannot be removed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /organizations/current/invitations/:
+    get:
+      operationId: listOrganizationInvitations
+      summary: List invitation history for the active network
+      description: Administrator-only; returns pending, expired, accepted, and revoked invitations.
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Invitation records and their current status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkInvitationList'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ActiveOrganizationRequired'
+    post:
+      operationId: createOrganizationInvitation
+      summary: Invite a person into the active network
+      description: >-
+        Administrator-only and requires MFA. Creates an invitation link that
+        expires after seven days and schedules email delivery after the
+        database transaction commits. Administrators receive network-wide
+        access; other roles require one or more active stores. Existing users
+        must sign in with the invited email before acceptance. Plan user-seat
+        entitlement enforcement belongs to the later billing slice.
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationInvitationCreateRequest'
+      responses:
+        '201':
+          description: Invitation created; the raw token is delivered only by email.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkInvitation'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: An active membership or pending invitation already exists for this email.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /organizations/current/invitations/{invitationId}/resend/:
+    parameters:
+      - $ref: '#/components/parameters/InvitationId'
+    post:
+      operationId: resendOrganizationInvitation
+      summary: Replace an invitation token and resend its email
+      description: Administrator-only and requires MFA. The new token expires after seven days and invalidates the previous token.
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      responses:
+        '200':
+          description: Updated invitation; the new token is sent by email and never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkInvitation'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ResourceUnavailable'
+        '409':
+          description: The invitation was accepted or revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /organizations/current/invitations/{invitationId}/revoke/:
+    parameters:
+      - $ref: '#/components/parameters/InvitationId'
+    post:
+      operationId: revokeOrganizationInvitation
+      summary: Revoke a pending invitation
+      description: Administrator-only and requires MFA. Revocation is audited and cannot be reversed; create a new invitation if access is still needed.
+      tags: [Identity]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      responses:
+        '200':
+          description: Invitation revoked or already revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkInvitation'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/ResourceUnavailable'
+        '409':
+          description: An accepted invitation cannot be revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /invitations/preview/:
+    post:
+      operationId: previewInvitation
+      summary: Validate an invitation link before acceptance
+      description: >-
+        Public and rate-limited. The raw token is sent only in the request
+        body and stored hashed at rest. Invalid, expired, revoked, or otherwise
+        unavailable invitations receive the same generic error. The response
+        never includes the raw token.
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvitationTokenRequest'
+      responses:
+        '200':
+          description: Network, role, store scope, and expiry for the invitation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitationPreview'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/ResourceUnavailable'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /invitations/accept/:
+    post:
+      operationId: acceptInvitation
+      summary: Accept an invitation and join its network
+      description: >-
+        A new account supplies fullName and password. An existing account must
+        sign in with the invited email before retrying the token. Acceptance
+        creates or reactivates the membership and audited store assignments in
+        one transaction. If the role requires MFA, the membership is committed
+        and a pre-authentication challenge is returned; an authenticated
+        session is issued only after the factor is completed. The token is
+        single use.
+      tags: [Identity]
+      security:
+        - CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvitationAcceptRequest'
+      responses:
+        '200':
+          description: Invitation accepted or MFA required before session issuance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitationAcceptResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: Existing invited account must sign in first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/ResourceUnavailable'
+        '409':
+          description: Membership is already active or invitation scope changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
   /organizations/current/operational-calendar/:
     get:
       operationId: listOrganizationOperationalCalendarVersions
@@ -643,11 +970,11 @@ paths:
       operationId: listStores
       summary: List stores in the active organization
       description: >-
-        Administrator-only. The organization is derived from the validated
-        active session. Each store reports its current explicit overrides and
-        the effective calendar resolved field by field from those overrides
-        and the network defaults. effectiveCalendar is null while a required
-        value cannot be resolved.
+        Administrators see every active store. Managers, operators, and
+        buyers see only their active store assignments. Each store reports
+        current explicit overrides and the effective calendar resolved from
+        those overrides and network defaults. effectiveCalendar is null while
+        a required value cannot be resolved.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -709,10 +1036,10 @@ paths:
       operationId: listStoreOperationalCalendarVersions
       summary: List date-effective store calendar overrides
       description: >-
-        Administrator-only. The server verifies the store belongs to the
-        validated active organization. Returns historical and future override
-        versions with audit metadata; null or omitted fields inherit the
-        network default for that field on the effective operational date.
+        An administrator, manager, operator, or buyer assigned to this store
+        may read historical and future override versions. The server verifies
+        store scope; null or omitted fields inherit the network default for
+        that field on the effective operational date.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -731,8 +1058,8 @@ paths:
       operationId: createStoreOperationalCalendarVersion
       summary: Append a store calendar override version
       description: >-
-        Administrator-only. The server verifies the store belongs to the
-        validated active organization. Creates an immutable, audited version
+        A network administrator or manager assigned to this store creates an
+        immutable, audited version
         effective inclusively from the supplied operational date. Each field
         is independent: null or an omitted override inherits the network
         default for that field; send any store-specific value that should
@@ -773,10 +1100,11 @@ paths:
       operationId: listProducts
       summary: List products in the active organization
       description: >-
-        Administrators and buyers may read the network catalog. The
-        organization is derived from the validated active session. SKU is
-        unique within this organization; no organizationId is supplied by the
-        client. Product creation remains administrator-only.
+        Administrators, managers, operators, and buyers may read products.
+        Non-administrators receive only products linked to an active store in
+        their assignment scope. The organization is derived from the active
+        session. SKU is unique within the organization; product creation
+        remains administrator-only.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -830,8 +1158,9 @@ paths:
       operationId: listProductCategories
       summary: List product categories in the active organization
       description: >-
-        Administrators and buyers may read the tenant-scoped category catalog.
-        Category names and identifiers are isolated by the active organization.
+        Administrators, managers, operators, and buyers may read categories
+        represented by products in their assigned active stores. Category
+        names and identifiers remain isolated by the active organization.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -1137,8 +1466,9 @@ paths:
         subtotal after package minimums and multiples among suppliers that
         arrive in time. Freight, budgets, and expected purchase
         deliveries are not modeled in this increment and are disclosed in the
-        response. Access is temporarily administrator-only until store-scoped
-        assignments are implemented.
+        response. Administrators, managers, and buyers may read this
+        store-scoped recommendation; non-administrators need an active store
+        assignment.
       tags: [Replenishment]
       security:
         - SessionCookie: []
@@ -1161,7 +1491,10 @@ paths:
     get:
       operationId: listStoreSalesCoverage
       summary: List declared complete sales periods for a store
-      description: A product/day without a row counts as zero only for dates in these declared complete periods and while the product assortment was active.
+      description: >-
+        An administrator, manager, operator, or buyer assigned to this store
+        may read periods. A product/day without a row counts as zero only for
+        dates in declared complete periods and while the assortment was active.
       tags: [Replenishment]
       security:
         - SessionCookie: []
@@ -1179,7 +1512,10 @@ paths:
     post:
       operationId: declareStoreSalesCoverage
       summary: Declare a store sales period complete
-      description: Administrator confirms the entire inclusive date range is complete. Future dates are rejected.
+      description: >-
+        A manager or operator assigned to the store declares the entire
+        inclusive date range complete. Future dates are rejected; the actor
+        and time are audited.
       tags: [Replenishment]
       security:
         - SessionCookie: []
@@ -1223,6 +1559,7 @@ paths:
     get:
       operationId: listStoreOutOfStockDays
       summary: List explicit out-of-stock dates for a store
+      description: Administrators and assigned managers, operators, and buyers may read these evidence records.
       tags: [Replenishment]
       security:
         - SessionCookie: []
@@ -1240,7 +1577,10 @@ paths:
     post:
       operationId: recordStoreOutOfStockDay
       summary: Mark a product as out of stock on an operational date
-      description: The product must belong to the organization and have an active assortment on the requested date. Future dates are rejected.
+      description: >-
+        An assigned manager or operator records the evidence. The product must
+        belong to the organization and have an active assortment on the
+        requested date. Future dates are rejected.
       tags: [Replenishment]
       security:
         - SessionCookie: []
@@ -1393,12 +1733,11 @@ paths:
       summary: List purchasing conditions for a supplier
       description: >-
         Administrators and buyers only. Conditions are immutable, effective-
-        dated versions. With no storeId, administrators receive all scopes;
-        buyers receive only shared network conditions. Supplying storeId is
-        administrator-only until explicit store assignments are implemented.
-        Administrators with a storeId receive shared network conditions and
-        overrides for that store. Delivery lead time is measured in calendar
-        days.
+        dated versions. With no storeId, administrators receive all scopes and
+        buyers receive shared network conditions. Supplying storeId returns
+        shared conditions plus that store's overrides; a buyer must have an
+        active assignment to the store. Delivery lead time is measured in
+        calendar days.
       tags: [Catalog]
       security:
         - SessionCookie: []
@@ -1412,7 +1751,7 @@ paths:
         - name: storeId
           in: query
           required: false
-          description: Administrator-only; when supplied, include shared conditions and this store's overrides.
+          description: An administrator or buyer assigned to this store may include shared conditions and its overrides.
           schema:
             type: string
             format: uuid
@@ -1434,10 +1773,9 @@ paths:
       summary: Add an effective-dated purchasing condition
       description: >-
         Administrators and buyers only. A missing or null storeId creates a
-        shared network condition; administrators may supply a storeId to
-        create an override. Buyers are limited to shared conditions until
-        explicit store assignments are implemented; supplying storeId as a
-        buyer returns catalog_store_access_required. Conditions are
+        shared network condition. An administrator or buyer assigned to the
+        selected store may supply storeId to create a store override.
+        Conditions are
         append-only: effectiveFrom must be later than the latest version for
         the same supplier, product, and scope. Delivery lead time uses
         calendar days. MOQ and purchaseMultiple are expressed in
@@ -1476,8 +1814,9 @@ paths:
       operationId: listStoreProductAssortments
       summary: List current and historical store-product links
       description: >-
-        Administrator-only. Store ownership is checked against the validated
-        active organization. Returns active and historical links so ending a
+        A manager, operator, or buyer assigned to this store may read its
+        active and historical links. Store ownership and scope are checked
+        against the validated active organization. Returns links so ending a
         range never removes its audit history. Validity uses the half-open
         interval [effectiveFrom, effectiveTo): the start is inclusive and the
         optional end is exclusive.
@@ -1622,12 +1961,13 @@ paths:
       operationId: listCurrentStockBalances
       summary: Read current stock balances from movements
       description: >-
-        Administrator-only. Requires an effective operational calendar for
-        the store's current operational date. Balances are calculated by
+        An administrator, manager, operator, or buyer assigned to this store
+        may read balances. Requires an effective operational calendar for the
+        store's current operational date. Balances are calculated by
         aggregating the store's stock movements; this contract does not
         introduce a separate materialized projection. Quantities are exact
         decimals and follow each product's base-unit precision. Store
-        ownership is checked against the validated active organization.
+        ownership and scope are checked against the validated active organization.
       tags: [Inventory]
       security:
         - SessionCookie: []
@@ -1655,9 +1995,7 @@ paths:
         store. operationalDate is a store-local business date determined by
         the effective time zone and operational-day start; the query dates
         are already operational dates and do not include a client timezone.
-        The role model is store-scoped: an operator or manager assigned to the
-        store may read these records. This PR temporarily permits only
-        administrators until store-role onboarding is available. Reads may be
+        An assigned manager, operator, or buyer may read these records. Reads may be
         used before an opening count and return an empty list when no sales
         exist. Product dates before the opening cutoff are demand-only while
         within the demand-eligible assortment period; records at/after it may
@@ -1711,10 +2049,8 @@ paths:
         liquidate residual stock but are not demand-eligible or recommendation
         inputs.
 
-        Authorization target: an operator or manager assigned to this store.
-        This PR temporarily gates writes to administrators until store-role
-        onboarding is available; the eventual role check must remain
-        store-scoped. Browser writes require CSRF.
+        An operator or manager assigned to this store may create a total.
+        Browser writes require CSRF.
 
         operationId is a client-generated UUID idempotency key. Repeating the
         same operationId with the same canonical payload returns the existing
@@ -1760,11 +2096,10 @@ paths:
       operationId: listDailySaleCorrections
       summary: List the audit history of a daily sales total
       description: >-
-        Returns every explicit correction in chronological order, preserving
+        An assigned manager, operator, or buyer may read every explicit
+        correction in chronological order, preserving
         the previous and new totals, actor, reason, server timestamp, and any
-        compensating movement. Authorization follows the store-scoped role
-        model; this PR temporarily permits only administrators until
-        store-role onboarding is available.
+        compensating movement. Authorization is scoped to this store.
       tags: [Sales]
       security:
         - SessionCookie: []
@@ -1796,10 +2131,8 @@ paths:
         stock movement for the difference only are committed in the same
         transaction. Retrying the same operationId with the same payload
         returns the existing correction; reusing that ID with a different
-        payload returns 409. Authorization target is a store-assigned
-        operator or manager; this PR temporarily gates writes to
-        administrators until store-role onboarding is available. Browser
-        writes require CSRF.
+        payload returns 409. A store-assigned operator or manager may correct
+        the total. Browser writes require CSRF.
       tags: [Sales]
       security:
         - SessionCookie: []
@@ -1883,6 +2216,7 @@ paths:
     get:
       operationId: getStorePurchaseBudget
       summary: Read effective purchase limits for a store
+      description: An administrator, manager, operator, or buyer assigned to the store may read its effective limits.
       tags: [Purchasing]
       security:
         - SessionCookie: []
@@ -1936,7 +2270,9 @@ paths:
     get:
       operationId: listStorePurchaseOrders
       summary: List purchase orders for a store
-      description: Administrator-only in this slice; orders remain separate by store.
+      description: >-
+        A manager, operator, or buyer assigned to the store may read its
+        orders. Orders remain separate by store.
       tags: [Purchasing]
       security:
         - SessionCookie: []
@@ -1954,7 +2290,10 @@ paths:
     post:
       operationId: createStorePurchaseOrderDraft
       summary: Create a draft from current recommendations
-      description: The selected supplier must be the recommended supplier for every item; quantities and conditions are captured by the server.
+      description: >-
+        A manager or buyer assigned to the store may create a draft. The
+        selected supplier must be recommended for every item; quantities and
+        conditions are captured by the server.
       tags: [Purchasing]
       security:
         - SessionCookie: []
@@ -1993,6 +2332,7 @@ paths:
     get:
       operationId: getStorePurchaseOrder
       summary: Read a purchase order and its snapshot
+      description: A manager, operator, or buyer assigned to the store may read the order.
       tags: [Purchasing]
       security:
         - SessionCookie: []
@@ -2010,7 +2350,10 @@ paths:
     patch:
       operationId: editStorePurchaseOrderDraft
       summary: Replace items or supplier on a draft
-      description: Only draft orders can change. MOQ and package multiples are enforced; justifications are required for rule exceptions.
+      description: >-
+        Only a manager assigned to the store can edit draft orders. MOQ and
+        package multiples are enforced; justifications are required for rule
+        exceptions.
       tags: [Purchasing]
       security:
         - SessionCookie: []
@@ -2047,7 +2390,10 @@ paths:
     post:
       operationId: reviewStorePurchaseOrder
       summary: Revalidate a draft and mark it reviewed
-      description: Rechecks demand, stock, supplier conditions, and the source snapshot; stale orders cannot be approved.
+      description: >-
+        A manager or buyer assigned to the store may review the draft. The
+        server rechecks demand, stock, supplier conditions, and the source
+        snapshot; stale orders cannot be approved.
       tags: [Purchasing]
       security:
         - SessionCookie: []
@@ -2078,7 +2424,10 @@ paths:
     post:
       operationId: approveStorePurchaseOrder
       summary: Revalidate and approve a reviewed order
-      description: Online only. Commits estimated value to the store's weekly and monthly budget periods at approval time.
+      description: >-
+        Online only; only the manager assigned to the store may approve.
+        Commits estimated value to the store's weekly and monthly budget
+        periods at approval time.
       tags: [Purchasing]
       security:
         - SessionCookie: []
@@ -2120,6 +2469,7 @@ paths:
     get:
       operationId: listStorePurchaseOrderReceipts
       summary: List partial and total receipts
+      description: A manager, operator, or buyer assigned to the store may read receipts.
       tags: [Purchasing]
       security:
         - SessionCookie: []
@@ -2138,6 +2488,7 @@ paths:
       operationId: receiveStorePurchaseOrder
       summary: Record a partial or total physical receipt
       description: >-
+        A manager or operator assigned to the store may register a receipt.
         Accepted quantities create positive stock movements in the same
         transaction as receipt/order updates. Quantities above the approved
         order are recorded as pending excess and do not enter stock or budget.
@@ -2183,7 +2534,7 @@ paths:
     post:
       operationId: cancelStorePurchaseOrderRemaining
       summary: Cancel the unreceived order balance
-      description: Manager-only in the complete product; this initial API slice checks administrator access until store roles exist.
+      description: Only the manager assigned to the store may cancel unreceived quantities.
       tags: [Purchasing]
       security:
         - SessionCookie: []
@@ -2283,6 +2634,22 @@ components:
       schema:
         type: string
         format: uuid
+    MembershipId:
+      name: membershipId
+      in: path
+      required: true
+      description: Membership UUID in the active organization.
+      schema:
+        type: string
+        format: uuid
+    InvitationId:
+      name: invitationId
+      in: path
+      required: true
+      description: Invitation UUID in the active organization.
+      schema:
+        type: string
+        format: uuid
   responses:
     ValidationError:
       description: Request validation failed.
@@ -2302,7 +2669,9 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
     AdministratorRequired:
-      description: The active membership does not have the administrator role required by this initial slice.
+      description: >-
+        The caller lacks the required network or store role, the membership or
+        store assignment is unavailable, or required MFA assurance is missing.
       content:
         application/json:
           schema:
@@ -2390,10 +2759,10 @@ components:
               - $ref: '#/components/schemas/OpeningStockAlreadyRecorded'
     DailySalesAccessRequired:
       description: >-
-        The response code is administrator_required when the caller lacks the
-        temporary administrator role, or mfa_required when MFA has not been
-        satisfied. The eventual role model grants operators and managers
-        access only to stores assigned to them, after required MFA.
+        The response code is store_access_required when the user lacks an
+        allowed role or assignment, administrator_required where an
+        administrator-only route requires that role, or mfa_required when
+        MFA has not been satisfied.
       content:
         application/json:
           schema:
@@ -2403,14 +2772,14 @@ components:
             properties:
               code:
                 type: string
-                enum: [administrator_required, mfa_required]
+                enum: [administrator_required, store_access_required, mfa_required]
               message:
                 type: string
     CatalogAccessRequired:
       description: >-
-        The active membership must be an administrator or buyer, and MFA must
-        be satisfied when required by the role. The code identifies the
-        specific access failure.
+        Catalog operations require an administrator or buyer membership and
+        MFA. A buyer selecting a store-specific supplier condition must also
+        have that store assigned. The code identifies the access failure.
       content:
         application/json:
           schema:
@@ -2420,7 +2789,7 @@ components:
             properties:
               code:
                 type: string
-                enum: [catalog_access_required, catalog_store_access_required, mfa_required]
+                enum: [catalog_access_required, catalog_store_access_required, inventory_access_required, mfa_required]
               message:
                 type: string
     SupplierNameConflict:
@@ -2469,6 +2838,221 @@ components:
               - $ref: '#/components/schemas/IdempotencyConflict'
               - $ref: '#/components/schemas/DailySaleQuantityConflict'
   schemas:
+    MembershipRole:
+      type: string
+      enum: [administrator, store_manager, operator, buyer]
+    MembershipRoleUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [role, storeIds]
+      properties:
+        role:
+          $ref: '#/components/schemas/MembershipRole'
+        storeIds:
+          type: array
+          maxItems: 500
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+          description: Empty for administrators; required for every other role.
+    MembershipStoreScopeRequest:
+      type: object
+      additionalProperties: false
+      required: [storeIds]
+      properties:
+        storeIds:
+          type: array
+          maxItems: 500
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+          description: At least one active store is required for every non-administrator role.
+    NetworkMembershipRecord:
+      type: object
+      additionalProperties: false
+      required: [id, userId, email, fullName, role, status, storeIds, storeNames]
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        fullName:
+          type: string
+        role:
+          $ref: '#/components/schemas/MembershipRole'
+        status:
+          type: string
+          enum: [active, removed]
+        storeIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        storeNames:
+          type: array
+          items:
+            type: string
+    NetworkMembershipList:
+      type: object
+      additionalProperties: false
+      required: [memberships]
+      properties:
+        memberships:
+          type: array
+          items:
+            $ref: '#/components/schemas/NetworkMembershipRecord'
+    OrganizationInvitationCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [email, role, storeIds]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        role:
+          $ref: '#/components/schemas/MembershipRole'
+        storeIds:
+          type: array
+          maxItems: 500
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+          description: Empty for administrators; one or more active stores for other roles.
+    NetworkInvitation:
+      type: object
+      additionalProperties: false
+      required: [id, email, role, roleName, status, storeIds, storeNames, expiresAt, sentCount, createdAt, acceptedAt, revokedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/MembershipRole'
+        roleName:
+          type: string
+        status:
+          type: string
+          enum: [pending, expired, accepted, revoked]
+        storeIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        storeNames:
+          type: array
+          items:
+            type: string
+        expiresAt:
+          type: string
+          format: date-time
+        sentCount:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        acceptedAt:
+          type: [string, 'null']
+          format: date-time
+        revokedAt:
+          type: [string, 'null']
+          format: date-time
+    NetworkInvitationList:
+      type: object
+      additionalProperties: false
+      required: [invitations]
+      properties:
+        invitations:
+          type: array
+          items:
+            $ref: '#/components/schemas/NetworkInvitation'
+    InvitationTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          minLength: 32
+          maxLength: 128
+          writeOnly: true
+    InvitationPreview:
+      type: object
+      additionalProperties: false
+      required: [organizationName, email, role, roleName, storeNames, expiresAt]
+      properties:
+        organizationName:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/MembershipRole'
+        roleName:
+          type: string
+        storeNames:
+          type: array
+          items:
+            type: string
+        expiresAt:
+          type: string
+          format: date-time
+    InvitationAcceptRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          minLength: 32
+          maxLength: 128
+          writeOnly: true
+        fullName:
+          type: string
+          minLength: 2
+          maxLength: 160
+          description: Required only when the invited email does not yet have an account.
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          maxLength: 256
+          description: Required only when the invited email does not yet have an account.
+    InvitationAcceptResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [accepted, second_factor_required, second_factor_enrollment_required]
+        organizationId:
+          type: string
+          format: uuid
+        challengeId:
+          type: string
+          format: uuid
+        methods:
+          type: array
+          items:
+            type: string
+            enum: [webauthn, recovery_code]
+        membership:
+          $ref: '#/components/schemas/NetworkMembershipRecord'
+        createdAccount:
+          type: boolean
     RegistrationRequest:
       type: object
       additionalProperties: false
