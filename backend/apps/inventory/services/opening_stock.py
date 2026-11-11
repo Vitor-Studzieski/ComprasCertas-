@@ -66,7 +66,10 @@ def _store_for_org(*, organization_id, store_id, lock=False):
         raise StoreUnavailable from exc
 
 
-def confirm_opening_stock(*, request, store_id, closed_operational_date: date, lines: list[dict]):
+def confirm_opening_stock(
+    *, request, store_id, closed_operational_date: date, lines: list[dict],
+    source=OpeningStockBatch.Source.MANUAL,
+):
     """Validate and record a complete opening count atomically for one store."""
     if not lines:
         raise InvalidOpeningStock
@@ -156,7 +159,7 @@ def confirm_opening_stock(*, request, store_id, closed_operational_date: date, l
             store=store,
             closed_operational_date=closed_operational_date,
             cutoff_date=cutoff_date,
-            source=OpeningStockBatch.Source.MANUAL,
+            source=source,
             created_by=request.user,
         )
 
