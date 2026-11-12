@@ -324,6 +324,39 @@ h1 { max-width: 480px; margin: 0 0 20px; font-size: clamp(36px, 4.4vw, 54px); fo
 .purchase-order-lines-table td { font-variant-numeric: tabular-nums; }
 .purchase-order-unit-note { display: block; margin-top: 4px; color: #68736b; font-size: 10px; font-weight: 400; }
 .purchase-receipt-result { margin: 14px 0; padding: 13px; background: #f1f5ef; border: 1px solid #dfe8dc; border-radius: 9px; }
+
+.delivery-tracking { display: grid; gap: 11px; margin: 16px 0; padding: 15px; background: #f8faf7; border: 1px solid #dfe8dc; border-radius: 10px; }
+.delivery-tracking-heading, .delivery-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.delivery-tracking-heading h5, .delivery-create-form h6, .delivery-alerts h6 { margin: 0 0 5px; color: #2d4435; font-size: 13px; }
+.delivery-tracking-heading p, .delivery-send-step p, .delivery-card > p, .delivery-alert > p { margin: 0; color: #5d6b61; font-size: 11px; line-height: 1.5; }
+.delivery-sent-badge { padding: 5px 8px; color: #285137; background: #e8f3e4; border-radius: 999px; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.delivery-send-step { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px; background: #fff; border: 1px solid #e4eae2; border-radius: 8px; }
+.delivery-send-step .secondary-button, .delivery-create-form .secondary-button { width: auto; min-height: 38px; margin: 0; padding: 0 12px; white-space: nowrap; }
+.delivery-list { display: grid; gap: 9px; }
+.delivery-card { display: grid; gap: 9px; padding: 12px; background: #fff; border: 1px solid #e4eae2; border-radius: 8px; }
+.delivery-card-heading > div { display: grid; gap: 3px; }
+.delivery-card-heading strong { color: #34443b; font-size: 11px; }
+.delivery-card-heading > div > span { color: #66736a; font-size: 10px; }
+.delivery-status { padding: 4px 7px; border-radius: 999px; font-size: 9px; font-weight: 700; }
+.delivery-status-confirmed { color: #285137; background: #e8f3e4; }
+.delivery-status-received { color: #3b5c72; background: #eaf2f6; }
+.delivery-status-cancelled { color: #795046; background: #f7ece8; }
+.delivery-eta-form { display: grid; grid-template-columns: minmax(115px, .6fr) minmax(180px, 1fr) auto; align-items: end; gap: 7px 9px; }
+.delivery-eta-form label, .delivery-create-form label, .delivery-alert-action label { color: #34443b; font-size: 10px; font-weight: 700; }
+.delivery-eta-form input, .delivery-create-form input, .delivery-create-form select, .delivery-alert-action input { min-width: 0; min-height: 36px; padding: 7px 9px; border: 1px solid #dce3dc; border-radius: 7px; background: #fff; }
+.delivery-eta-form .text-button { min-height: 36px; padding: 0 10px; border: 1px solid #dcebd4; border-radius: 7px; color: #285137; background: transparent; font-size: 10px; font-weight: 700; }
+.delivery-history summary { color: #4f6255; cursor: pointer; font-size: 10px; font-weight: 700; }
+.delivery-history ul { display: grid; gap: 5px; margin: 8px 0 0; padding-left: 18px; color: #68736b; font-size: 10px; }
+.delivery-create-form { display: grid; gap: 7px; padding: 12px; background: #fff; border: 1px dashed #cad8c6; border-radius: 8px; }
+.delivery-create-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.delivery-create-fields > div { display: grid; gap: 6px; }
+.delivery-alerts { display: grid; gap: 8px; }
+.delivery-alert { display: grid; gap: 8px; padding: 11px; background: #fff7f2; border: 1px solid #f0d5c8; border-left: 4px solid #c56b46; border-radius: 8px; }
+.delivery-alert > strong { color: #79482f; font-size: 11px; }
+.delivery-alert-action { display: grid; gap: 6px; }
+.delivery-alert-action .text-button { justify-self: start; min-height: 34px; padding: 0 10px; color: #285137; background: #fff; border: 1px solid #dcebd4; border-radius: 7px; font-size: 10px; font-weight: 700; }
+.delivery-alert-buttons { display: flex; flex-wrap: wrap; gap: 7px; }
+.delivery-alert-buttons .text-button { justify-self: auto; }
 .purchase-receipt-result h5, .purchase-order-action-form h5, .purchase-order-action-block h5 { margin: 0 0 9px; color: #2d4435; font-size: 13px; }
 .purchase-receipt-result > p { color: #526459; font-size: 11px; }
 .purchase-receipt-result .field-hint { margin: 9px 0 0; }
@@ -448,6 +481,10 @@ h1 { max-width: 480px; margin: 0 0 20px; font-size: clamp(36px, 4.4vw, 54px); fo
   .purchase-orders-refresh { width: 100%; }
   .purchase-budget-summary, .purchase-order-totals, .purchase-budget-editors, .purchase-order-actions { grid-template-columns: 1fr; }
   .purchase-order-list-main { grid-template-columns: 1fr; align-items: start; }
+  .delivery-send-step, .delivery-tracking-heading { align-items: stretch; flex-direction: column; }
+  .delivery-send-step .secondary-button, .delivery-create-form .secondary-button { width: 100%; }
+  .delivery-eta-form { grid-template-columns: 1fr; }
+  .delivery-create-fields { grid-template-columns: 1fr; }
   .purchase-order-list-item .text-button { justify-self: start; }
   .purchase-orders-list-heading, .purchase-order-detail-heading { align-items: flex-start; flex-direction: column; }
   .purchase-order-detail { padding: 14px; }

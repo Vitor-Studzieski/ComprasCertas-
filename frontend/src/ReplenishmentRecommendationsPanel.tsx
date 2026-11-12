@@ -17,6 +17,7 @@ type SupplierComparison = {
   purchaseMultiple: string;
   orderQuantity: string | null;
   stockAtArrival: string | null;
+  confirmedInboundBeforeArrival: string;
   predictedShortageBeforeArrival: string;
   quantityNeededBase: string | null;
   orderQuantityBase: string | null;
@@ -31,6 +32,7 @@ type Recommendation = {
   product: { id: string; sku: string; name: string; baseUnit: ProductUnit; categoryId: string | null; categoryName?: string | null };
   currentStock: string;
   averageDailyDemand: string | null;
+  expectedDeliveries: Array<{ etaDate: string; quantityBase: string }>;
   validDemandDays: number;
   lowEvidence: boolean;
   targetStock: string | null;
@@ -137,6 +139,7 @@ function reasonLabel(code: string): string {
     low_evidence: 'Baixa evidência de demanda',
     missing_minimum_stock: 'Estoque mínimo não configurado',
     freight_unknown: 'Frete desconhecido; custo total parcial',
+    confirmed_delivery_included: 'Entrega confirmada incluída na projeção antes da chegada deste fornecedor',
   };
   return labels[code] ?? code.replaceAll('_', ' ');
 }
@@ -156,7 +159,6 @@ function warningLabel(code: string): string {
 
 function limitationLabel(code: string): string {
   const labels: Record<string, string> = {
-    expected_deliveries_not_modeled: 'Entregas futuras confirmadas ainda não são consideradas no saldo projetado.',
     budget_not_modeled: 'Os limites semanal e mensal de orçamento ainda não são considerados.',
     freight_not_recorded: 'O frete não está registrado; não é possível afirmar o custo total completo.',
   };
@@ -550,6 +552,7 @@ export default function ReplenishmentRecommendationsPanel({
 
                     <div className="recommendation-explanation">
                       <p><strong>Janela de demanda:</strong> {displayDate(item.evidence.demandWindowStart)} a {displayDate(item.evidence.demandWindowEnd)}.</p>
+                      {item.expectedDeliveries.length > 0 && <p><strong>Entradas confirmadas:</strong> {item.expectedDeliveries.map((delivery) => displayExactDecimal(delivery.quantityBase) + " " + unitLabel(item.product.baseUnit) + " em " + displayDate(delivery.etaDate)).join("; ")}.</p>}
                       <p><strong>Dados usados:</strong> {item.evidence.explicitSalesDays} dias com venda explícita, {item.evidence.completeSalesDays} dias cobertos e {item.evidence.excludedOutOfStockDays} dias sem estoque excluídos.</p>
                       <p><strong>Parâmetros efetivos:</strong> mínimo {item.effectiveParameters.minimumStock === null ? 'não configurado' : `${displayExactDecimal(item.effectiveParameters.minimumStock)} ${unitLabel(item.product.baseUnit)}`}, segurança {item.effectiveParameters.safetyDays ?? 'não configurada'} dias, revisão {item.effectiveParameters.reviewIntervalDays ?? 'não configurada'} dias ({parameterSourceLabel(item.effectiveParameters.source)}).</p>
                       <p className="replenishment-parameter-sources"><strong>Origem dos parâmetros:</strong> mínimo {item.effectiveParameters.minimumStockSource ? parameterSourceLabel(item.effectiveParameters.minimumStockSource) : 'não informada'}; segurança {item.effectiveParameters.safetyDaysSource ? parameterSourceLabel(item.effectiveParameters.safetyDaysSource) : 'não informada'}; revisão {item.effectiveParameters.reviewIntervalSource ? parameterSourceLabel(item.effectiveParameters.reviewIntervalSource) : 'não informada'}.</p>
@@ -569,7 +572,7 @@ export default function ReplenishmentRecommendationsPanel({
                         <div className="table-scroll" role="region" aria-label={`Fornecedores comparados para ${item.product.name}`} tabIndex={0}>
                           <table className="balance-table supplier-comparison-table">
                             <thead>
-                              <tr><th scope="col">Fornecedor</th><th scope="col">Prazo</th><th scope="col">Saldo na chegada</th><th scope="col">Falta antes da chegada</th><th scope="col">Preço / subtotal de mercadoria</th><th scope="col">Frete / custo total</th><th scope="col">Mínimo / embalagem</th><th scope="col">Quantidade</th><th scope="col">Critério</th></tr>
+                              <tr><th scope="col">Fornecedor</th><th scope="col">Prazo</th><th scope="col">Saldo na chegada</th><th scope="col">Entradas confirmadas</th><th scope="col">Falta antes da chegada</th><th scope="col">Preço / subtotal de mercadoria</th><th scope="col">Frete / custo total</th><th scope="col">Mínimo / embalagem</th><th scope="col">Quantidade</th><th scope="col">Critério</th></tr>
                             </thead>
                             <tbody>
                               {item.supplierComparisons.map((supplier) => (
@@ -577,6 +580,7 @@ export default function ReplenishmentRecommendationsPanel({
                                   <th scope="row">{supplier.supplierName}</th>
                                   <td>{supplierAvailabilityLabel(supplier)}</td>
                                   <td>{supplier.stockAtArrival === null ? 'Sem projeção' : `${displayExactDecimal(supplier.stockAtArrival)} ${unitLabel(item.product.baseUnit)}`}</td>
+                                  <td>{displayExactDecimal(supplier.confirmedInboundBeforeArrival)} {unitLabel(item.product.baseUnit)}</td>
                                   <td>{displayExactDecimal(supplier.predictedShortageBeforeArrival)} {unitLabel(item.product.baseUnit)}</td>
                                   <td>
                                     {supplier.unitCost === null ? 'Preço unitário desconhecido' : `R$ ${displayExactDecimal(supplier.unitCost)} / ${supplier.purchaseUnitName}`}
@@ -607,7 +611,7 @@ export default function ReplenishmentRecommendationsPanel({
               ))}
             </div>
           )}
-          <p className="field-hint replenishment-scope-note">Esta etapa calcula a necessidade e compara as condições cadastradas. Orçamentos, pedidos esperados e aprovações ainda não fazem parte desta tela.</p>
+          <p className="field-hint replenishment-scope-note">Entregas confirmadas entram no saldo projetado; o orçamento é revalidado pelo servidor no momento da aprovação.</p>
         </>
       )}
 
