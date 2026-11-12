@@ -108,3 +108,23 @@ class PurchaseOrderCancelRemainingRequestSerializer(StrictInputMixin, serializer
         if not value:
             raise serializers.ValidationError("Informe o motivo do cancelamento do saldo pendente.")
         return value
+
+
+class ExpectedDeliveryCreateRequestSerializer(StrictInputMixin, serializers.Serializer):
+    productId = serializers.UUIDField()
+    quantity = ExactQuantityStringField(max_digits=14, decimal_places=3, min_value=0)
+    etaDate = serializers.DateField(input_formats=["%Y-%m-%d"])
+
+
+class ExpectedDeliveryPatchRequestSerializer(StrictInputMixin, serializers.Serializer):
+    etaDate = serializers.DateField(input_formats=["%Y-%m-%d"])
+    reason = serializers.CharField(max_length=1000, allow_blank=False, trim_whitespace=True)
+
+
+class DeliveryRiskAcknowledgeRequestSerializer(StrictInputMixin, serializers.Serializer):
+    actionNote = serializers.CharField(max_length=1000, allow_blank=False, trim_whitespace=True)
+
+
+class DeliveryRiskResolveRequestSerializer(StrictInputMixin, serializers.Serializer):
+    resolution = serializers.ChoiceField(choices=["resolved", "justified"])
+    reason = serializers.CharField(max_length=1000, allow_blank=False, trim_whitespace=True)
