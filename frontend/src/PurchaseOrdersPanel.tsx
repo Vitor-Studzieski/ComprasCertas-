@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { apiGet, apiPatch, apiPost, ApiError } from './api';
 import { exportPurchaseOrderXlsx, printPurchaseOrder } from './purchaseOrderExport';
+import PurchaseOrderDeliveryTrackingPanel from './PurchaseOrderDeliveryTrackingPanel';
 
 type PurchaseOrderStatus = 'draft' | 'reviewed' | 'approved' | 'partially_received' | 'received' | 'cancelled' | 'stale' | string;
 type PurchaseOrderItem = {
@@ -32,6 +33,7 @@ type PurchaseOrder = {
   budgetMonthStart: string | null;
   budgetStatus: string;
   stale: boolean;
+  openDeliveryRiskAlertCount?: number;
   createdAt: string;
   approvedAt: string | null;
   budgetExceptionReason?: string | null;
@@ -616,7 +618,7 @@ export default function PurchaseOrdersPanel({ storeId, storeName, role, isAdmini
                 <div className="purchase-order-list-main">
                   <div>
                     <strong>{order.supplierName}</strong>
-                    <span>{statusLabel(order.status)} · criado {displayDateTime(order.createdAt)}{order.stale ? ' · requer recálculo' : ''}</span>
+                    <span>{statusLabel(order.status)} · criado {displayDateTime(order.createdAt)}{order.stale ? ' · requer recálculo' : ''}{(order.openDeliveryRiskAlertCount ?? 0) > 0 ? ' · ' + order.openDeliveryRiskAlertCount + ' alerta(s) de ruptura' : ''}</span>
                   </div>
                   <div className="purchase-order-list-values">
                     <span>Estimado: {order.estimatedTotal === null ? '—' : `R$ ${displayDecimal(order.estimatedTotal)}`}</span>
@@ -639,7 +641,7 @@ export default function PurchaseOrdersPanel({ storeId, storeName, role, isAdmini
                   <p>{statusLabel(selectedOrder.status)} · criado {displayDateTime(selectedOrder.createdAt)}{selectedOrder.approvedAt ? ` · aprovado ${displayDateTime(selectedOrder.approvedAt)}` : ''}</p>
                 </div>
                 <div className="purchase-order-export-actions">
-                  {canExportOrders && ['approved', 'partially_received', 'received'].includes(selectedOrder.status) && (
+                  {canExportOrders && ['approved', 'partially_received', 'received', 'cancelled'].includes(selectedOrder.status) && (
                     <>
                       <button className="secondary-button" disabled={busy} onClick={() => exportPurchaseOrderXlsx(selectedOrder, storeName)} type="button">Baixar Excel (.xlsx)</button>
                       <button className="text-button" disabled={busy} onClick={() => printPurchaseOrder(`${storeName}-pedido-${selectedOrder.id.slice(0, 8)}`)} type="button">Imprimir / salvar PDF</button>
@@ -680,6 +682,19 @@ export default function PurchaseOrdersPanel({ storeId, storeName, role, isAdmini
                   </tbody>
                 </table>
               </div>
+
+              {['approved', 'partially_received', 'received'].includes(selectedOrder.status) && (
+                <PurchaseOrderDeliveryTrackingPanel
+                  storeId={storeId}
+                  orderId={selectedOrder.id}
+                  orderStatus={selectedOrder.status}
+                  items={selectedOrder.items}
+                  role={role}
+                  isAdministrator={isAdministrator}
+                  online={online}
+                  onRefresh={() => setReloadSequence((current) => current + 1)}
+                />
+              )}
 
               {latestReceipt && (
                 <div className="purchase-receipt-result" role="status">
