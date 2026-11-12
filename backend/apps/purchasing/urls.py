@@ -8,6 +8,11 @@ from apps.purchasing.views import (
     PurchaseOrderReceiptListCreateView,
     PurchaseOrderReviewView,
     StorePurchaseOrderListCreateView,
+    PurchaseOrderSendView,
+    PurchaseOrderDeliveryTrackingView,
+    ExpectedDeliveryDetailView,
+    DeliveryRiskAcknowledgeView,
+    DeliveryRiskResolveView,
 )
 
 
@@ -37,6 +42,31 @@ urlpatterns = [
         "stores/<uuid:store_id>/purchase-orders/<uuid:order_id>/approve/",
         PurchaseOrderApproveView.as_view(),
         name="store-purchase-order-approve",
+    ),
+    path(
+        "stores/<uuid:store_id>/purchase-orders/<uuid:order_id>/send/",
+        PurchaseOrderSendView.as_view(),
+        name="store-purchase-order-send",
+    ),
+    path(
+        "stores/<uuid:store_id>/purchase-orders/<uuid:order_id>/expected-deliveries/",
+        PurchaseOrderDeliveryTrackingView.as_view(),
+        name="store-purchase-order-expected-deliveries",
+    ),
+    path(
+        "stores/<uuid:store_id>/purchase-orders/<uuid:order_id>/expected-deliveries/<uuid:delivery_id>/",
+        ExpectedDeliveryDetailView.as_view(),
+        name="store-purchase-order-expected-delivery-detail",
+    ),
+    path(
+        "stores/<uuid:store_id>/purchase-orders/<uuid:order_id>/delivery-risk-alerts/<uuid:alert_id>/acknowledge/",
+        DeliveryRiskAcknowledgeView.as_view(),
+        name="store-purchase-order-delivery-risk-acknowledge",
+    ),
+    path(
+        "stores/<uuid:store_id>/purchase-orders/<uuid:order_id>/delivery-risk-alerts/<uuid:alert_id>/resolve/",
+        DeliveryRiskResolveView.as_view(),
+        name="store-purchase-order-delivery-risk-resolve",
     ),
     path(
         "stores/<uuid:store_id>/purchase-orders/<uuid:order_id>/receipts/",

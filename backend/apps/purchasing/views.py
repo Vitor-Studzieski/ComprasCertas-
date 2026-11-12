@@ -31,6 +31,10 @@ from apps.purchasing.serializers import (
     PurchaseOrderCancelRemainingRequestSerializer,
     PurchaseOrderDraftCreateRequestSerializer,
     PurchaseOrderDraftPatchRequestSerializer,
+    ExpectedDeliveryCreateRequestSerializer,
+    ExpectedDeliveryPatchRequestSerializer,
+    DeliveryRiskAcknowledgeRequestSerializer,
+    DeliveryRiskResolveRequestSerializer,
     PurchaseReceiptCreateRequestSerializer,
 )
 from apps.purchasing.services.orders import (
@@ -326,6 +330,181 @@ class PurchaseOrderCancelRemainingView(InventoryAdministratorAPIView):
             except (PurchaseUnavailable, PurchaseConflict, IntegrityError) as exc:
                 return _purchase_error(exc)
             return Response(order, status=HTTP_200_OK)
+
+
+def _delivery_error(exc):
+    from apps.purchasing.services.expected_deliveries import (
+        DeliveryConflict,
+        DeliveryUnavailable,
+        DeliveryValidationError,
+    )
+
+    if isinstance(exc, DeliveryUnavailable):
+        return _resource_unavailable()
+    if isinstance(exc, DeliveryValidationError):
+        return _problem("expected_delivery_validation_error", str(exc), HTTP_400_BAD_REQUEST)
+    if isinstance(exc, DeliveryConflict):
+        return _problem(
+            "purchase_order_conflict",
+            "O pedido ou alerta mudou desde a última leitura; atualize e tente novamente.",
+            HTTP_409_CONFLICT,
+        )
+    if isinstance(exc, OperationalCalendarMissing):
+        return _problem(
+            "operational_calendar_required",
+            "Configure o fuso e o início do dia operacional antes de operar compras nesta loja.",
+            HTTP_409_CONFLICT,
+        )
+    if isinstance(exc, IntegrityError):
+        return _problem(
+            "purchase_order_conflict",
+            "Uma alteração concorrente impediu a operação; atualize e tente novamente.",
+            HTTP_409_CONFLICT,
+        )
+    raise exc
+
+
+class PurchaseOrderSendView(InventoryAdministratorAPIView):
+    def post(self, request, store_id, order_id):
+        if request.data not in ({}, None):
+            return _validation_response({"non_field_errors": ["O registro de envio não recebe campos."]})
+        from apps.purchasing.services.expected_deliveries import mark_purchase_order_sent
+
+        with transaction.atomic():
+            _, error = _organization_and_store_access(request, store_id, STORE_DRAFT_CREATE_ROLES)
+            if error:
+                return error
+            try:
+                return Response(
+                    mark_purchase_order_sent(request=request, store_id=store_id, order_id=order_id),
+                    status=HTTP_200_OK,
+                )
+            except Exception as exc:
+                return _delivery_error(exc)
+
+
+class PurchaseOrderDeliveryTrackingView(InventoryAdministratorAPIView):
+    def get(self, request, store_id, order_id):
+        from apps.purchasing.services.expected_deliveries import list_order_delivery_tracking
+
+        with transaction.atomic():
+            organization_id, error = _organization_and_store_access(request, store_id, STORE_READ_ROLES)
+            if error:
+                return error
+            try:
+                return Response(
+                    list_order_delivery_tracking(
+                        organization_id=organization_id,
+                        store_id=store_id,
+                        order_id=order_id,
+                    ),
+                    status=HTTP_200_OK,
+                )
+            except Exception as exc:
+                return _delivery_error(exc)
+
+    def post(self, request, store_id, order_id):
+        from apps.purchasing.services.expected_deliveries import create_expected_delivery
+
+        serializer = ExpectedDeliveryCreateRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+        with transaction.atomic():
+            _, error = _organization_and_store_access(request, store_id, STORE_DRAFT_CREATE_ROLES)
+            if error:
+                return error
+            try:
+                delivery = create_expected_delivery(
+                    request=request,
+                    store_id=store_id,
+                    order_id=order_id,
+                    product_id=serializer.validated_data["productId"],
+                    quantity=serializer.validated_data["quantity"],
+                    eta_date=serializer.validated_data["etaDate"],
+                )
+                return Response(delivery, status=HTTP_201_CREATED)
+            except Exception as exc:
+                return _delivery_error(exc)
+
+
+class ExpectedDeliveryDetailView(InventoryAdministratorAPIView):
+    def patch(self, request, store_id, order_id, delivery_id):
+        from apps.purchasing.services.expected_deliveries import update_expected_delivery_eta
+
+        serializer = ExpectedDeliveryPatchRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+        with transaction.atomic():
+            _, error = _organization_and_store_access(request, store_id, STORE_DRAFT_CREATE_ROLES)
+            if error:
+                return error
+            try:
+                return Response(
+                    update_expected_delivery_eta(
+                        request=request,
+                        store_id=store_id,
+                        order_id=order_id,
+                        delivery_id=delivery_id,
+                        eta_date=serializer.validated_data["etaDate"],
+                        reason=serializer.validated_data["reason"],
+                    ),
+                    status=HTTP_200_OK,
+                )
+            except Exception as exc:
+                return _delivery_error(exc)
+
+
+class DeliveryRiskAcknowledgeView(InventoryAdministratorAPIView):
+    def post(self, request, store_id, order_id, alert_id):
+        from apps.purchasing.services.expected_deliveries import acknowledge_delivery_risk
+
+        serializer = DeliveryRiskAcknowledgeRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+        with transaction.atomic():
+            _, error = _organization_and_store_access(request, store_id, STORE_DRAFT_CREATE_ROLES)
+            if error:
+                return error
+            try:
+                return Response(
+                    acknowledge_delivery_risk(
+                        request=request,
+                        store_id=store_id,
+                        order_id=order_id,
+                        alert_id=alert_id,
+                        action_note=serializer.validated_data["actionNote"],
+                    ),
+                    status=HTTP_200_OK,
+                )
+            except Exception as exc:
+                return _delivery_error(exc)
+
+
+class DeliveryRiskResolveView(InventoryAdministratorAPIView):
+    def post(self, request, store_id, order_id, alert_id):
+        from apps.purchasing.services.expected_deliveries import resolve_delivery_risk
+
+        serializer = DeliveryRiskResolveRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return _validation_response(serializer.errors)
+        with transaction.atomic():
+            _, error = _organization_and_store_access(request, store_id, STORE_DRAFT_CREATE_ROLES)
+            if error:
+                return error
+            try:
+                return Response(
+                    resolve_delivery_risk(
+                        request=request,
+                        store_id=store_id,
+                        order_id=order_id,
+                        alert_id=alert_id,
+                        resolution=serializer.validated_data["resolution"],
+                        reason=serializer.validated_data["reason"],
+                    ),
+                    status=HTTP_200_OK,
+                )
+            except Exception as exc:
+                return _delivery_error(exc)
 
 
 class PurchaseBudgetSettingsView(InventoryAdministratorAPIView):

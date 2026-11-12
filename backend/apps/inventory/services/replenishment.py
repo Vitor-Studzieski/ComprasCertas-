@@ -3,7 +3,7 @@
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
-from django.db.models import Q, Sum
+from django.db.models import F, Q, Sum
 from django.utils import timezone
 
 from apps.catalog.models import SupplierProductCondition
@@ -140,7 +140,6 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
             "reviewIntervalDays": None,
             "window": {"days": 30, "startDate": window_start.isoformat(), "endDate": window_end.isoformat()},
             "limitations": [
-                "expected_deliveries_not_modeled",
                 "budget_not_modeled",
                 "freight_not_recorded",
             ],
@@ -193,7 +192,35 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
             product_id__in=product_ids,
         ).values("product_id").annotate(total=Sum("quantity_delta"))
     }
-    from apps.purchasing.models import PurchaseReceiptLine
+    from apps.purchasing.models import ExpectedDelivery, PurchaseReceiptLine
+
+    expected_rows = list(
+        ExpectedDelivery.objects.filter(
+            organization_id=organization_id,
+            order_item__order__store_id=store.pk,
+            order_item__order__sent_to_supplier_at__isnull=False,
+            order_item__product_id__in=product_ids,
+            status=ExpectedDelivery.Status.CONFIRMED,
+            eta_date__gte=as_of_date,
+        )
+        .filter(received_quantity__lt=F("expected_quantity"))
+        .select_related("order_item")
+        .order_by("eta_date", "id")
+        .values(
+            "order_item__product_id",
+            "eta_date",
+            "expected_quantity",
+            "received_quantity",
+            "order_item__base_units_per_purchase_unit",
+        )
+    )
+    expected_by_product = {product_id: [] for product_id in product_ids}
+    for row in expected_rows:
+        remaining = max(Decimal("0"), row["expected_quantity"] - row["received_quantity"])
+        expected_by_product[row["order_item__product_id"]].append({
+            "eta_date": row["eta_date"],
+            "quantity_base": remaining * row["order_item__base_units_per_purchase_unit"],
+        })
 
     recent_receipt_lines = list(
         PurchaseReceiptLine.objects.filter(
@@ -311,9 +338,28 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
                 unit_cost_source = "supplier_condition"
                 base_unit_cost = unit_cost / condition.base_units_per_purchase_unit
             lead_days = condition.delivery_lead_time_days
-            consumption_to_arrival = (demand or Decimal("0")) * Decimal(lead_days)
-            stock_at_arrival = current_stock - consumption_to_arrival
-            predicted_shortage = max(Decimal("0"), consumption_to_arrival - current_stock)
+            daily_demand = demand or Decimal("0")
+            stock_at_arrival = current_stock
+            inbound_before_arrival = Decimal("0")
+            for inbound in expected_by_product[product.pk]:
+                if inbound["eta_date"] <= as_of_date:
+                    stock_at_arrival += inbound["quantity_base"]
+                    inbound_before_arrival += inbound["quantity_base"]
+            predicted_shortage = max(Decimal("0"), -stock_at_arrival)
+            for offset in range(1, lead_days + 1):
+                day = as_of_date + timedelta(days=offset)
+                stock_at_arrival += sum(
+                    (inbound["quantity_base"] for inbound in expected_by_product[product.pk] if inbound["eta_date"] == day),
+                    Decimal("0"),
+                )
+                if day <= as_of_date + timedelta(days=lead_days):
+                    inbound_before_arrival += sum(
+                        (inbound["quantity_base"] for inbound in expected_by_product[product.pk] if inbound["eta_date"] == day),
+                        Decimal("0"),
+                    )
+                stock_at_arrival -= daily_demand
+                predicted_shortage = max(predicted_shortage, -stock_at_arrival)
+            predicted_shortage = max(Decimal("0"), predicted_shortage)
             quantity_needed = (
                 max(Decimal("0"), target_stock - stock_at_arrival)
                 if target_stock is not None
@@ -334,6 +380,7 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
                 "condition": condition,
                 "stock_at_arrival": stock_at_arrival,
                 "predicted_shortage": predicted_shortage,
+                "expected_inbound_base": inbound_before_arrival,
                 "quantity_needed": quantity_needed,
                 "order_quantity": order_quantity,
                 "order_quantity_base": order_quantity_base,
@@ -410,6 +457,8 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
         for index, row in enumerate(supplier_rows, start=1):
             condition = row["condition"]
             reason_codes = []
+            if row["expected_inbound_base"] > 0:
+                reason_codes.append("confirmed_delivery_included")
             if row["predicted_shortage"] == 0:
                 reason_codes.append("arrives_before_predicted_stockout")
             else:
@@ -438,6 +487,7 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
                 "costCompleteness": "partial",
                 "partialCost": True,
                 "stockAtArrival": _decimal_text(row["stock_at_arrival"]),
+                "confirmedInboundBeforeArrival": _decimal_text(row["expected_inbound_base"]),
                 "predictedShortageBeforeArrival": _decimal_text(row["predicted_shortage"]),
                 "quantityNeededBase": _decimal_text(row["quantity_needed"]),
                 "orderQuantity": _decimal_text(row["order_quantity"]),
@@ -475,6 +525,10 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
             },
             "currentStock": _decimal_text(current_stock),
             "averageDailyDemand": _decimal_text(demand),
+            "expectedDeliveries": [
+                {"etaDate": row["eta_date"].isoformat(), "quantityBase": _decimal_text(row["quantity_base"])}
+                for row in expected_by_product[product.pk]
+            ],
             "validDemandDays": valid_days,
             "lowEvidence": valid_days < 30,
             "evidence": {
@@ -526,6 +580,6 @@ def generate_store_recommendations(*, organization_id, store: Store, as_of_date:
         "generatedAt": timezone.now().isoformat(),
         "reviewIntervalDays": effective_review_interval,
         "window": {"days": 30, "startDate": window_start.isoformat(), "endDate": window_end.isoformat()},
-        "limitations": ["expected_deliveries_not_modeled", "budget_not_modeled", "freight_not_recorded"],
+        "limitations": ["budget_not_modeled", "freight_not_recorded"],
         "recommendations": recommendations,
     }

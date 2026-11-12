@@ -100,6 +100,14 @@ class PurchaseOrder(TenantRecord):
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.DRAFT)
     source_snapshot = models.JSONField(default=dict)
     approved_snapshot = models.JSONField(null=True, blank=True)
+    sent_to_supplier_at = models.DateTimeField(null=True, blank=True)
+    sent_to_supplier_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="purchase_orders_sent",
+        null=True,
+        blank=True,
+    )
     estimated_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     committed_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     budget_week_start = models.DateField(null=True, blank=True)
@@ -187,6 +195,116 @@ class PurchaseOrderItem(TenantRecord):
                 name="pur_item_approved_covers_received",
             ),
         ]
+
+
+class ExpectedDelivery(TenantRecord):
+    class Status(models.TextChoices):
+        CONFIRMED = "confirmed", "Confirmada"
+        RECEIVED = "received", "Recebida"
+        CANCELLED = "cancelled", "Cancelada"
+
+    order_item = models.ForeignKey(
+        PurchaseOrderItem,
+        on_delete=models.PROTECT,
+        related_name="expected_deliveries",
+    )
+    eta_date = models.DateField()
+    expected_quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    received_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.CONFIRMED)
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="expected_deliveries_confirmed",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="expected_deliveries_updated",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "purchasing_expected_delivery"
+        ordering = ["eta_date", "created_at", "id"]
+        constraints = [
+            models.CheckConstraint(condition=Q(expected_quantity__gt=0), name="pur_expected_qty_positive"),
+            models.CheckConstraint(condition=Q(received_quantity__gte=0), name="pur_expected_received_nonnegative"),
+            models.CheckConstraint(
+                condition=Q(received_quantity__lte=F("expected_quantity")),
+                name="pur_expected_received_lte_expected",
+            ),
+            models.CheckConstraint(
+                condition=Q(status__in=["confirmed", "received", "cancelled"]),
+                name="pur_expected_status_valid",
+            ),
+        ]
+
+
+class ExpectedDeliveryEvent(TenantRecord):
+    delivery = models.ForeignKey(
+        ExpectedDelivery,
+        on_delete=models.PROTECT,
+        related_name="events",
+    )
+    event_type = models.CharField(max_length=32)
+    old_eta_date = models.DateField(null=True, blank=True)
+    new_eta_date = models.DateField(null=True, blank=True)
+    reason = models.TextField(blank=True, default="")
+    payload = models.JSONField(default=dict)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="expected_delivery_events_created",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        db_table = "purchasing_expected_delivery_event"
+        ordering = ["created_at", "id"]
+
+
+class DeliveryRiskAlert(TenantRecord):
+    class Status(models.TextChoices):
+        OPEN = "open", "Aberto"
+        ACKNOWLEDGED = "acknowledged", "Reconhecido"
+        RESOLVED = "resolved", "Resolvido"
+        JUSTIFIED = "justified", "Justificado"
+
+    delivery = models.ForeignKey(
+        ExpectedDelivery,
+        on_delete=models.PROTECT,
+        related_name="risk_alerts",
+    )
+    old_eta_date = models.DateField()
+    new_eta_date = models.DateField()
+    previous_stockout_date = models.DateField(null=True, blank=True)
+    projected_stockout_date = models.DateField(null=True, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
+    action_note = models.TextField(blank=True, default="")
+    resolution_reason = models.TextField(blank=True, default="")
+    acknowledged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="delivery_risk_alerts_acknowledged",
+        null=True,
+        blank=True,
+    )
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="delivery_risk_alerts_resolved",
+        null=True,
+        blank=True,
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        db_table = "purchasing_delivery_risk_alert"
+        ordering = ["-created_at", "id"]
 
 
 class PurchaseReceipt(TenantRecord):

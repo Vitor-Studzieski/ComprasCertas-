@@ -13,6 +13,7 @@ from apps.inventory.models import Product, StockMovement, Store
 from apps.inventory.services.calendar import OperationalCalendarMissing, current_operational_date
 from apps.inventory.services.replenishment import generate_store_recommendations
 from apps.purchasing.models import (
+    DeliveryRiskAlert,
     PurchaseBudget,
     PurchaseOrder,
     PurchaseOrderEvent,
@@ -228,6 +229,12 @@ def _order_repr(order):
         "stale": order.status == PurchaseOrder.Status.STALE,
         "createdAt": order.created_at.isoformat(),
         "approvedAt": order.approved_at.isoformat() if order.approved_at else None,
+        "sentToSupplierAt": order.sent_to_supplier_at.isoformat() if order.sent_to_supplier_at else None,
+        "openDeliveryRiskAlertCount": DeliveryRiskAlert.objects.filter(
+            organization_id=order.organization_id,
+            delivery__order_item__order_id=order.pk,
+            status__in=[DeliveryRiskAlert.Status.OPEN, DeliveryRiskAlert.Status.ACKNOWLEDGED],
+        ).count(),
         "items": items,
     }
 
@@ -765,6 +772,15 @@ def receive_purchase_order(*, request, store_id, order_id, supplier_reference, i
             )
         item.received_quantity += accepted
         item.save(update_fields=["received_quantity"])
+        if accepted > 0:
+            from apps.purchasing.services.expected_deliveries import allocate_expected_receipt
+
+            allocate_expected_receipt(
+                organization_id=organization_id,
+                order_item=item,
+                accepted_quantity=accepted,
+                actor=request.user,
+            )
 
     all_received = all(
         item.received_quantity >= (item.approved_quantity or Decimal("0"))
@@ -822,6 +838,14 @@ def cancel_purchase_order_remaining(*, request, store_id, order_id, reason):
     for item in order.items.select_for_update().all():
         item.approved_quantity = item.received_quantity
         item.save(update_fields=["approved_quantity"])
+    from apps.purchasing.services.expected_deliveries import cancel_expected_deliveries_for_order
+
+    cancel_expected_deliveries_for_order(
+        organization_id=organization_id,
+        order=order,
+        actor=request.user,
+        reason=reason,
+    )
     order.status = PurchaseOrder.Status.CANCELLED
     order.committed_amount = actual_received
     order.cancelled_by = request.user
