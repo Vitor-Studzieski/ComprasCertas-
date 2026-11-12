@@ -1467,12 +1467,12 @@ paths:
         minimum stock is the target; if no minimum is configured, no quantity
         is suggested. Minimum stock and safety days resolve independently by
         store-product, product, category, then network; the review interval
-        resolves by store then network. Supplier choice prioritizes avoiding
-        predicted shortage, then compares the calculated known merchandise
-        subtotal after package minimums and multiples among suppliers that
-        arrive in time. Freight, budgets, and expected purchase
-        deliveries are not modeled in this increment and are disclosed in the
-        response. Administrators, managers, and buyers may read this
+        resolves by store then network. Confirmed, unreceived delivery parcels
+        on orders recorded as sent to suppliers are projected on their ETA dates.
+        Supplier choice prioritizes avoiding predicted shortage, then compares
+        the calculated known merchandise subtotal after package minimums and
+        multiples among suppliers that arrive in time. Freight and budgets
+        remain disclosed limitations. Administrators, managers, and buyers may read this
         store-scoped recommendation; non-administrators need an active store
         assignment.
       tags: [Replenishment]
@@ -2660,6 +2660,241 @@ paths:
                   - $ref: '#/components/schemas/PurchaseBudgetExceeded'
                   - $ref: '#/components/schemas/PurchaseOrderConflict'
                   - $ref: '#/components/schemas/OperationalCalendarRequired'
+  /stores/{storeId}/purchase-orders/{orderId}/send/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    post:
+      operationId: markStorePurchaseOrderSent
+      summary: Record that an approved order was sent to its supplier
+      description: >-
+        The manager or buyer assigned to the store records manual transmission
+        of the approved order. This endpoint does not send an email or connect
+        to the supplier. Expected deliveries cannot be registered until this
+        timestamp exists.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      responses:
+        '200':
+          description: Supplier handoff recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [orderId, sentToSupplierAt, sentBy]
+                properties:
+                  orderId:
+                    type: string
+                    format: uuid
+                  sentToSupplierAt:
+                    type: string
+                    format: date-time
+                  sentBy:
+                    type: string
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: Current order or alert state does not permit the action.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderConflict'
+  /stores/{storeId}/purchase-orders/{orderId}/expected-deliveries/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/PurchaseOrderId'
+    get:
+      operationId: getStorePurchaseOrderDeliveryTracking
+      summary: List confirmed delivery parcels and their risk alerts
+      description: Managers, operators, or buyers assigned to the store may read the tracking data.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Expected deliveries, ETA history, and risk alerts for this order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderDeliveryTracking'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+    post:
+      operationId: createStoreExpectedDelivery
+      summary: Register a supplier-confirmed delivery parcel
+      description: >-
+        The manager or buyer assigned to the store records one confirmed
+        quantity and ETA after the purchase order was sent. The sum of parcels
+        cannot exceed the approved, unreceived quantity. Only sent orders with
+        confirmed ETAs contribute to projected stock.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExpectedDeliveryCreate'
+      responses:
+        '201':
+          description: Confirmed delivery registered and relevant unapproved drafts marked stale.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpectedDelivery'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: Order was not approved/sent, or its approved balance changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderConflict'
+  /stores/{storeId}/purchase-orders/{orderId}/expected-deliveries/{deliveryId}/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/PurchaseOrderId'
+      - name: deliveryId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      operationId: updateStoreExpectedDeliveryEta
+      summary: Change a supplier-confirmed ETA
+      description: >-
+        A manager or buyer assigned to the store must provide a reason. The
+        previous and new dates, author, and time are audited. The server
+        recalculates stockout risk and creates an alert if the predicted
+        stockout moves earlier. Unapproved drafts for the product are marked
+        stale.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExpectedDeliveryEtaPatch'
+      responses:
+        '200':
+          description: Delivery updated and any new risk alert returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpectedDeliveryEtaUpdate'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: Current order or alert state does not permit the action.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderConflict'
+  /stores/{storeId}/purchase-orders/{orderId}/delivery-risk-alerts/{alertId}/acknowledge/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/PurchaseOrderId'
+      - name: alertId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: acknowledgeDeliveryRiskAlert
+      summary: Record the action taken for a delivery risk alert
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryRiskAcknowledge'
+      responses:
+        '200':
+          description: Alert acknowledged with the action note.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryRiskAlert'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: Current order or alert state does not permit the action.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderConflict'
+  /stores/{storeId}/purchase-orders/{orderId}/delivery-risk-alerts/{alertId}/resolve/:
+    parameters:
+      - $ref: '#/components/parameters/StoreId'
+      - $ref: '#/components/parameters/PurchaseOrderId'
+      - name: alertId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: resolveDeliveryRiskAlert
+      summary: Close an acknowledged delivery risk alert
+      description: Record whether the risk was resolved or accepted with justification.
+      tags: [Purchasing]
+      security:
+        - SessionCookie: []
+          CsrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryRiskResolve'
+      responses:
+        '200':
+          description: Alert closed as resolved or justified.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryRiskAlert'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '403':
+          $ref: '#/components/responses/AdministratorRequired'
+        '404':
+          $ref: '#/components/responses/StoreScopedNotFound'
+        '409':
+          description: Current order or alert state does not permit the action.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderConflict'
   /stores/{storeId}/purchase-orders/{orderId}/cancel-remaining/:
     parameters:
       - $ref: '#/components/parameters/StoreId'
@@ -4655,7 +4890,7 @@ components:
           type: array
           items:
             type: string
-            enum: [expected_deliveries_not_modeled, budget_not_modeled, freight_not_recorded]
+            enum: [budget_not_modeled, freight_not_recorded]
         recommendations:
           type: array
           items:
@@ -4663,7 +4898,7 @@ components:
     StoreProductRecommendation:
       type: object
       additionalProperties: false
-      required: [product, currentStock, averageDailyDemand, validDemandDays, lowEvidence, evidence, coverageDays, stockDeficit, effectiveParameters, targetStock, suggestedQuantity, quantityToOrder, excessOverTarget, selectedSupplierId, reasonCodes, warnings, supplierComparisons]
+      required: [product, currentStock, averageDailyDemand, expectedDeliveries, validDemandDays, lowEvidence, evidence, coverageDays, stockDeficit, effectiveParameters, targetStock, suggestedQuantity, quantityToOrder, excessOverTarget, selectedSupplierId, reasonCodes, warnings, supplierComparisons]
       properties:
         product:
           type: object
@@ -4692,6 +4927,20 @@ components:
           type: [string, 'null']
           pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
           description: Six-decimal average over valid days; null when no valid demand day exists.
+        expectedDeliveries:
+          type: array
+          description: Confirmed, unreceived quantities on orders already sent to suppliers.
+          items:
+            type: object
+            additionalProperties: false
+            required: [etaDate, quantityBase]
+            properties:
+              etaDate:
+                type: string
+                format: date
+              quantityBase:
+                type: string
+                pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
         validDemandDays:
           type: integer
           minimum: 0
@@ -4782,7 +5031,7 @@ components:
     SupplierRecommendationComparison:
       type: object
       additionalProperties: false
-      required: [supplierConditionId, supplierId, supplierName, availability, deliveryLeadTimeDays, unitCost, unitCostSource, knownMerchandiseCost, purchaseUnitName, baseUnitsPerPurchaseUnit, minimumPurchaseQuantity, purchaseMultiple, freightStatus, costCompleteness, partialCost, stockAtArrival, predictedShortageBeforeArrival, quantityNeededBase, orderQuantity, orderQuantityBase, excessOverTarget, selected, ruptureAvoidanceRank, costRank, reasonCodes]
+      required: [supplierConditionId, supplierId, supplierName, availability, deliveryLeadTimeDays, unitCost, unitCostSource, knownMerchandiseCost, purchaseUnitName, baseUnitsPerPurchaseUnit, minimumPurchaseQuantity, purchaseMultiple, freightStatus, costCompleteness, partialCost, stockAtArrival, confirmedInboundBeforeArrival, predictedShortageBeforeArrival, quantityNeededBase, orderQuantity, orderQuantityBase, excessOverTarget, selected, ruptureAvoidanceRank, costRank, reasonCodes]
       properties:
         supplierConditionId:
           type: string
@@ -4832,6 +5081,10 @@ components:
         stockAtArrival:
           type: [string, 'null']
           pattern: '^-?(0|[1-9][0-9]*)(\.[0-9]+)?$'
+        confirmedInboundBeforeArrival:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+          description: Confirmed inbound units expected no later than this supplier's lead-time arrival date.
         predictedShortageBeforeArrival:
           type: string
           pattern: '^(0|[1-9][0-9]*)(\.[0-9]+)?$'
@@ -5002,7 +5255,7 @@ components:
     PurchaseOrder:
       type: object
       additionalProperties: false
-      required: [id, storeId, supplierId, supplierName, status, sourceAsOfDate, estimatedTotal, committedAmount, freightStatus, costCompleteness, budgetWeekStart, budgetMonthStart, budgetStatus, budgetExceptionReason, stale, createdAt, approvedAt, items]
+      required: [id, storeId, supplierId, supplierName, status, sourceAsOfDate, estimatedTotal, committedAmount, freightStatus, costCompleteness, budgetWeekStart, budgetMonthStart, budgetStatus, budgetExceptionReason, stale, createdAt, approvedAt, sentToSupplierAt, openDeliveryRiskAlertCount, items]
       properties:
         id:
           type: string
@@ -5053,6 +5306,13 @@ components:
         approvedAt:
           type: [string, 'null']
           format: date-time
+        sentToSupplierAt:
+          type: [string, 'null']
+          format: date-time
+        openDeliveryRiskAlertCount:
+          type: integer
+          minimum: 0
+          description: Unresolved ETA risk alerts for this order.
         items:
           type: array
           items:
@@ -5110,6 +5370,189 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PurchaseOrder'
+    ExpectedDeliveryCreate:
+      type: object
+      additionalProperties: false
+      required: [productId, quantity, etaDate]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+          description: Confirmed quantity in the purchase unit.
+        etaDate:
+          type: string
+          format: date
+    ExpectedDeliveryEtaPatch:
+      type: object
+      additionalProperties: false
+      required: [etaDate, reason]
+      properties:
+        etaDate:
+          type: string
+          format: date
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+    ExpectedDelivery:
+      type: object
+      additionalProperties: false
+      required: [id, orderId, productId, sku, productName, purchaseUnitName, baseUnitsPerPurchaseUnit, etaDate, expectedQuantity, receivedQuantity, remainingQuantity, status, createdAt, updatedAt, events]
+      properties:
+        id:
+          type: string
+          format: uuid
+        orderId:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        productName:
+          type: string
+        purchaseUnitName:
+          type: string
+        baseUnitsPerPurchaseUnit:
+          type: string
+        etaDate:
+          type: string
+          format: date
+        expectedQuantity:
+          type: string
+        receivedQuantity:
+          type: string
+        remainingQuantity:
+          type: string
+        status:
+          type: string
+          enum: [confirmed, received, cancelled]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        events:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [type, oldEtaDate, newEtaDate, reason, at, actorName]
+            properties:
+              type:
+                type: string
+              oldEtaDate:
+                type: [string, 'null']
+                format: date
+              newEtaDate:
+                type: [string, 'null']
+                format: date
+              reason:
+                type: string
+              at:
+                type: string
+                format: date-time
+              actorName:
+                type: string
+    DeliveryRiskAlert:
+      type: object
+      additionalProperties: false
+      required: [id, deliveryId, productId, sku, productName, oldEtaDate, newEtaDate, previousStockoutDate, projectedStockoutDate, status, actionNote, resolutionReason, createdAt, acknowledgedAt, resolvedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        deliveryId:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        productName:
+          type: string
+        oldEtaDate:
+          type: string
+          format: date
+        newEtaDate:
+          type: string
+          format: date
+        previousStockoutDate:
+          type: [string, 'null']
+          format: date
+        projectedStockoutDate:
+          type: [string, 'null']
+          format: date
+        status:
+          type: string
+          enum: [open, acknowledged, resolved, justified]
+        actionNote:
+          type: string
+        resolutionReason:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        acknowledgedAt:
+          type: [string, 'null']
+          format: date-time
+        resolvedAt:
+          type: [string, 'null']
+          format: date-time
+    PurchaseOrderDeliveryTracking:
+      type: object
+      additionalProperties: false
+      required: [sentToSupplierAt, deliveries, alerts]
+      properties:
+        sentToSupplierAt:
+          type: [string, 'null']
+          format: date-time
+        deliveries:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExpectedDelivery'
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeliveryRiskAlert'
+    ExpectedDeliveryEtaUpdate:
+      type: object
+      additionalProperties: false
+      required: [delivery, alert]
+      properties:
+        delivery:
+          $ref: '#/components/schemas/ExpectedDelivery'
+        alert:
+          oneOf:
+            - $ref: '#/components/schemas/DeliveryRiskAlert'
+            - type: 'null'
+    DeliveryRiskAcknowledge:
+      type: object
+      additionalProperties: false
+      required: [actionNote]
+      properties:
+        actionNote:
+          type: string
+          minLength: 1
+          maxLength: 1000
+    DeliveryRiskResolve:
+      type: object
+      additionalProperties: false
+      required: [resolution, reason]
+      properties:
+        resolution:
+          type: string
+          enum: [resolved, justified]
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
     PurchaseReceiptCreate:
       type: object
       additionalProperties: false
